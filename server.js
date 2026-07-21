@@ -1,645 +1,867 @@
-require('dotenv').config();
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { body, validationResult, param } = require('express-validator');
+import React, { useState, useEffect, useCallback } from 'react';
+import { BrowserRouter as Router, Routes, Route, Link, useNavigate, useParams } from 'react-router-dom';
+import axios from 'axios';
+import './App.css';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+// ===== КОНСТАНТЫ =====
+const baseNames = [
+  '🎭 Сценарий и драматургия',
+  '🎨 Режиссура и визуал',
+  '🔊 Звук и аудио-атмосфера',
+  '🎬 Актерская игра и монтаж'
+];
 
-// ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
-const requiredEnv = ['MONGODB_URI', 'JWT_SECRET', 'TMDB_API_KEY'];
-const missingEnv = requiredEnv.filter(key => !process.env[key]);
+const criteriaNames = [
+  ['Оригинальность сюжета', 'Логичность событий', 'Качество диалогов', 'Умение создавать напряжение', 'Сильная концовка'],
+  ['Композиция кадра', 'Цветокоррекция', 'Мастерство освещения', 'Движение камеры', 'Визуальные метафоры'],
+  ['Качество саундтрека', 'Звуковой дизайн', 'Использование тишины', 'Разборчивость речи', 'Естественность звуков'],
+  ['Аутентичность актеров', 'Химия между актёрами', 'Богатство мимики', 'Ритм монтажа', 'Техническая чистота']
+];
 
-if (missingEnv.length > 0) {
-  console.error(`❌ Ошибка: Отсутствуют обязательные переменные окружения: ${missingEnv.join(', ')}`);
-  console.error('   Добавьте их в настройках Render (Environment Variables)');
-  process.exit(1);
+const baseDescriptions = [
+  ['Насколько оригинален сюжет?', 'Нет ли сюжетных дыр?', 'Насколько естественно звучат диалоги?', 'Умеет ли фильм держать в напряжении?', 'Удовлетворяет ли концовка?'],
+  ['Насколько гармонична композиция кадра?', 'Соответствует ли цветокоррекция настроению?', 'Насколько профессионально освещение?', 'Уместна ли работа камеры?', 'Есть ли визуальные метафоры?'],
+  ['Насколько хорош саундтрек?', 'Насколько качественно звуковое окружение?', 'Насколько уместна тишина?', 'Четко ли слышна речь?', 'Насколько естественны звуковые эффекты?'],
+  ['Верите ли вы актёрам?', 'Чувствуете ли химию между актёрами?', 'Насколько выразительна мимика?', 'Соответствует ли монтаж динамике?', 'Насколько чисто сделаны склейки?']
+];
+
+// ===== API =====
+const api = axios.create({
+  baseURL: process.env.REACT_APP_API_URL || 'http://localhost:3000/api',
+});
+
+api.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token');
+      if (!window.location.pathname.startsWith('/login')) {
+        window.location.href = '/login';
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// ===== УТИЛИТЫ =====
+function getScoreColor(score) {
+  if (score === undefined || score === null || isNaN(score)) return '#666';
+  const clampedScore = Math.max(6, Math.min(90, score));
+  const normalized = (clampedScore - 6) / 84;
+  const hue = normalized * 120;
+  return `hsl(${hue}, 85%, ${45 + normalized * 15}%)`;
 }
 
-console.log('✅ Все переменные окружения заданы');
+// ===== МОДАЛЬНОЕ ОКНО С ДЕТАЛЯМИ ОЦЕНКИ =====
+function RatingDetailsModal({ rating, onClose }) {
+  if (!rating) return null;
 
-// ===== ПОДКЛЮЧЕНИЕ К БАЗЕ =====
-mongoose.set('strictQuery', false);
+  const bases = [rating.base1, rating.base2, rating.base3, rating.base4];
+  const baseAverages = bases.map(base => 
+    base && base.length === 5 ? (base.reduce((a, b) => a + b, 0) / 5).toFixed(1) : '0.0'
+  );
 
-// ===== СХЕМЫ МОДЕЛЕЙ =====
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+        <button className="modal-close" onClick={onClose}>✕</button>
+        
+        <div className="modal-header">
+          <h2>{rating.filmId?.title || 'Фильм'}</h2>
+          <p>Оценка: <span style={{ color: getScoreColor(rating.finalScore), fontSize: '28px', fontWeight: 'bold' }}>{rating.finalScore}</span></p>
+          <p className="modal-user">👤 {rating.userId?.nickname || 'Пользователь'}</p>
+          <p>Субъективный множитель (M): <strong>{rating.subjectiveM}</strong></p>
+          <p>Технический балл (T): <strong>{rating.technicalScore}</strong></p>
+          {rating.textReview && (
+            <div className="modal-review">
+              <p><strong>Отзыв:</strong> {rating.textReview}</p>
+            </div>
+          )}
+        </div>
 
-const userSchema = new mongoose.Schema({
-  email: { 
-    type: String, 
-    unique: true, 
-    required: true,
-    maxlength: 100
-  },
-  password: { 
-    type: String, 
-    required: true 
-  },
-  nickname: { 
-    type: String, 
-    required: true,
-    maxlength: 50
-  },
-  avatar: { 
-    type: String, 
-    default: '' 
-  },
-  registeredAt: { 
-    type: Date, 
-    default: Date.now 
-  }
-});
+        <div className="modal-bases">
+          {[0, 1, 2, 3].map((baseIndex) => (
+            <div key={baseIndex} className="modal-base">
+              <h4>{baseNames[baseIndex]} <span className="modal-base-avg">(среднее: {baseAverages[baseIndex]})</span></h4>
+              <div className="modal-criteria">
+                {criteriaNames[baseIndex].map((name, critIndex) => (
+                  <div key={critIndex} className="modal-criterion">
+                    <span>{name}</span>
+                    <span className="modal-criterion-score">{bases[baseIndex]?.[critIndex] || 0}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-const filmSchema = new mongoose.Schema({
-  tmdbId: { type: Number, unique: true },
-  title: { type: String, required: true },
-  year: Number,
-  poster: String,
-  description: { type: String, maxlength: 1000 },
-  genres: [String],
-  director: { type: String, maxlength: 100 },
-  actors: [String],
-  trailer: String,
-  createdAt: { type: Date, default: Date.now },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
-});
+// ===== ГЛАВНАЯ =====
+function HomePage() {
+  const [films, setFilms] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearch, setShowSearch] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const navigate = useNavigate();
 
-const ratingSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
-  base1: { type: [Number], required: true, validate: v => v.length === 5 },
-  base2: { type: [Number], required: true, validate: v => v.length === 5 },
-  base3: { type: [Number], required: true, validate: v => v.length === 5 },
-  base4: { type: [Number], required: true, validate: v => v.length === 5 },
-  subjectiveM: { type: Number, required: true, min: 1, max: 10 },
-  technicalScore: Number,
-  finalScore: Number,
-  textReview: { type: String, maxlength: 2000 },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+  useEffect(() => {
+    loadFilms();
+  }, []);
 
-// ===== ИНДЕКСЫ =====
-ratingSchema.index({ userId: 1, filmId: 1 }, { unique: true });
-ratingSchema.index({ filmId: 1 });
-ratingSchema.index({ userId: 1 });
-filmSchema.index({ title: 'text' });
+  const loadFilms = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.get('/films');
+      setFilms(response.data.films || []);
+    } catch (err) {
+      console.error('Ошибка загрузки фильмов:', err);
+      setError('Не удалось загрузить фильмы. Попробуйте позже.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const User = mongoose.model('User', userSchema);
-const Film = mongoose.model('Film', filmSchema);
-const Rating = mongoose.model('Rating', ratingSchema);
+  // ===== ИСПРАВЛЕННЫЙ ПОИСК =====
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) return;
+    try {
+      // ИСПРАВЛЕНИЕ: отправляем query как params, а не в URL
+      const response = await api.get('/tmdb/search', {
+        params: { query: searchQuery }
+      });
+      setSearchResults(response.data.results || []);
+      setShowSearch(true);
+    } catch (err) {
+      console.error('Ошибка поиска:', err);
+      alert('Ошибка поиска: ' + (err.response?.data?.error || err.message));
+    }
+  };
 
-// ===== ФУНКЦИЯ РАСЧЕТА ОЦЕНКИ =====
+  const importFilm = async (tmdbId) => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      alert('Чтобы добавить фильм, необходимо войти в систему.');
+      navigate('/login');
+      return;
+    }
+    
+    if (isImporting) return;
+    setIsImporting(true);
+    
+    try {
+      await api.post('/films/import', { tmdbId });
+      alert('Фильм успешно добавлен!');
+      setShowSearch(false);
+      setSearchQuery('');
+      await loadFilms();
+    } catch (err) {
+      alert('Ошибка: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
-function calculateRating(base1, base2, base3, base4, subjectiveM) {
+  const token = localStorage.getItem('token');
+
+  if (loading) return <div className="loading">Загрузка...</div>;
+
+  return (
+    <div className="container">
+      <header className="header">
+        <h1>🎬 СИНЕФИЛИУМ</h1>
+        <div className="header-actions">
+          {token ? (
+            <>
+              <Link to="/profile" className="btn-profile">👤 Профиль</Link>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('token');
+                  navigate('/');
+                }}
+                className="btn-logout"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#fff' }}
+              >
+                Выйти
+              </button>
+            </>
+          ) : (
+            <Link to="/login" className="btn-login">Войти</Link>
+          )}
+        </div>
+      </header>
+
+      <div className="hero">
+        <h2>Храм честного кино — 20 критериев для подробной оценки</h2>
+        <div className="search-box">
+          <input
+            type="text"
+            placeholder="Найти фильм в TMDB..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+          />
+          <button onClick={handleSearch}>🔍 Найти</button>
+        </div>
+      </div>
+
+      {error && <div className="error-msg">{error}</div>}
+
+      {showSearch && searchResults.length > 0 && (
+        <div className="search-results">
+          <h3>Результаты поиска:</h3>
+          <div className="films-grid">
+            {searchResults.map((film) => (
+              <div key={film.id} className="film-card">
+                <img 
+                  src={film.poster_path ? `https://image.tmdb.org/t/p/w200${film.poster_path}` : '/no-poster.jpg'} 
+                  alt={film.title}
+                />
+                <h4>{film.title}</h4>
+                <p>{film.release_date?.split('-')[0] || 'N/A'}</p>
+                <button onClick={() => importFilm(film.id)} disabled={isImporting}>
+                  {isImporting ? 'Добавление...' : '➕ Добавить'}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {films.length === 0 ? (
+        <div className="no-films">Нет добавленных фильмов. Найдите и добавьте первый!</div>
+      ) : (
+        <div className="films-grid">
+          {films.map((film) => (
+            <Link to={`/film/${film._id}`} key={film._id} className="film-card-link">
+              <div className="film-card">
+                <img src={film.poster || '/no-poster.jpg'} alt={film.title} />
+                <div className="film-info">
+                  <h3>{film.title}</h3>
+                  <p>{film.year}</p>
+                  <div className="rating-badge" style={{ color: getScoreColor(film.averageRating) }}>
+                    {film.averageRating ? `${film.averageRating.toFixed(1)}` : 'Нет оценок'}
+                  </div>
+                  <span className="votes-count">👥 {film.votesCount || 0}</span>
+                </div>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ===== СТРАНИЦА ФИЛЬМА =====
+function FilmPage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [film, setFilm] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [userRating, setUserRating] = useState(null);
+  const [isRatingMode, setIsRatingMode] = useState(false);
+  const [filmUsers, setFilmUsers] = useState([]);
+  const [selectedRating, setSelectedRating] = useState(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [usersLoading, setUsersLoading] = useState(false);
+
+  const [base1, setBase1] = useState([5, 5, 5, 5, 5]);
+  const [base2, setBase2] = useState([5, 5, 5, 5, 5]);
+  const [base3, setBase3] = useState([5, 5, 5, 5, 5]);
+  const [base4, setBase4] = useState([5, 5, 5, 5, 5]);
+  const [subjectiveM, setSubjectiveM] = useState(5);
+  const [textReview, setTextReview] = useState('');
+
+  useEffect(() => {
+    loadFilm();
+    loadFilmUsers();
+  }, [id]);
+
+  const loadFilm = async () => {
+    setLoading(true);
+    try {
+      const response = await api.get(`/films/${id}`);
+      setFilm(response.data);
+      if (response.data.userRating) {
+        const ur = response.data.userRating;
+        setUserRating(ur);
+        setBase1(ur.base1 || [5,5,5,5,5]);
+        setBase2(ur.base2 || [5,5,5,5,5]);
+        setBase3(ur.base3 || [5,5,5,5,5]);
+        setBase4(ur.base4 || [5,5,5,5,5]);
+        setSubjectiveM(ur.subjectiveM || 5);
+        setTextReview(ur.textReview || '');
+      } else {
+        setBase1([5,5,5,5,5]);
+        setBase2([5,5,5,5,5]);
+        setBase3([5,5,5,5,5]);
+        setBase4([5,5,5,5,5]);
+        setSubjectiveM(5);
+        setTextReview('');
+        setUserRating(null);
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки фильма:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadFilmUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const response = await api.get(`/films/${id}/users`);
+      setFilmUsers(response.data || []);
+    } catch (err) {
+      console.error('Ошибка загрузки пользователей:', err);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleRatingChange = useCallback((baseIndex, criterionIndex, value) => {
+    const setters = [setBase1, setBase2, setBase3, setBase4];
+    const setter = setters[baseIndex];
+    setter(prev => {
+      const newArr = [...prev];
+      newArr[criterionIndex] = Number(value);
+      return newArr;
+    });
+  }, []);
+
+  const calculatePreview = useCallback(() => {
     const avg1 = base1.reduce((a, b) => a + b, 0) / 5;
     const avg2 = base2.reduce((a, b) => a + b, 0) / 5;
     const avg3 = base3.reduce((a, b) => a + b, 0) / 5;
     const avg4 = base4.reduce((a, b) => a + b, 0) / 5;
-    
     const T = (avg1 + avg2 + avg3 + avg4) * 1.4;
     const finalRaw = T + 34 * (subjectiveM - 1) / 9;
-    
-    return {
-        technicalScore: Math.round(T),
-        finalScore: Math.round(finalRaw)
-    };
-}
+    return Math.min(90, Math.max(6, Math.round(finalRaw)));
+  }, [base1, base2, base3, base4, subjectiveM]);
 
-// ===== МИДДЛВАР АУТЕНТИФИКАЦИИ =====
-
-const authenticate = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) {
-    return res.status(401).json({ error: 'Не авторизован' });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.userId = decoded.userId;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Неверный токен' });
-  }
-};
-
-// ===== МИДДЛВАР ВАЛИДАЦИИ OBJECTID =====
-
-const validateObjectId = (paramName) => [
-  param(paramName).isMongoId().withMessage('Неверный ID')
-];
-
-// ===== АУТЕНТИФИКАЦИЯ =====
-
-app.post('/api/auth/register', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').isLength({ min: 6 }).withMessage('Пароль должен быть минимум 6 символов'),
-  body('nickname').notEmpty().isLength({ max: 50 }).withMessage('Никнейм не длиннее 50 символов')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { email, password, nickname } = req.body;
-    const existingUser = await User.findOne({ $or: [{ email }, { nickname }] });
-    if (existingUser) {
-      return res.status(400).json({ error: 'Пользователь уже существует' });
+  const saveRating = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      alert('Войдите в систему, чтобы оценивать фильмы');
+      navigate('/login');
+      return;
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const user = new User({ email, password: hashedPassword, nickname });
-    await user.save();
+    if (isSaving) return;
+    setIsSaving(true);
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ 
-      token, 
-      user: { 
-        id: user._id, 
-        email: user.email, 
-        nickname: user.nickname,
-        registeredAt: user.registeredAt 
-      } 
-    });
-  } catch (error) {
-    console.error('Ошибка регистрации:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.post('/api/auth/login', [
-  body('email').isEmail().normalizeEmail(),
-  body('password').notEmpty()
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(401).json({ error: 'Неверный email или пароль' });
-    }
-
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) {
-      return res.status(401).json({ error: 'Неверный email или пароль' });
-    }
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
-    res.json({ 
-      token, 
-      user: { 
-        id: user._id, 
-        email: user.email, 
-        nickname: user.nickname,
-        registeredAt: user.registeredAt 
-      } 
-    });
-  } catch (error) {
-    console.error('Ошибка входа:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.get('/api/auth/me', authenticate, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-    res.json(user);
-  } catch (error) {
-    console.error('Ошибка получения профиля:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// ===== ФИЛЬМЫ =====
-
-app.get('/api/films', async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 20;
-  const skip = (page - 1) * limit;
-
-  try {
-    // Один запрос через агрегацию вместо N запросов
-    const filmsWithRatings = await Film.aggregate([
-      { $sort: { createdAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: 'ratings',
-          localField: '_id',
-          foreignField: 'filmId',
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating: {
-            $cond: [
-              { $gt: [{ $size: '$ratings' }, 0] },
-              { $round: [{ $avg: '$ratings.finalScore' }, 1] },
-              0
-            ]
-          },
-          votesCount: { $size: '$ratings' }
-        }
-      },
-      { $project: { ratings: 0 } }
-    ]);
-
-    const total = await Film.countDocuments();
-
-    res.json({
-      films: filmsWithRatings,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit)
-    });
-  } catch (error) {
-    console.error('Ошибка загрузки фильмов:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.get('/api/films/:id', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const film = await Film.findById(req.params.id);
-    if (!film) {
-      return res.status(404).json({ error: 'Фильм не найден' });
-    }
-
-    const ratingData = await Rating.aggregate([
-      { $match: { filmId: film._id } },
-      { $group: {
-        _id: null,
-        avgRating: { $avg: '$finalScore' },
-        total: { $sum: 1 }
-      }}
-    ]);
-
-    let userRating = null;
-    const token = req.headers.authorization?.split(' ')[1];
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
-      } catch (e) {}
-    }
-
-    const avgRating = ratingData.length > 0 ? Math.round(ratingData[0].avgRating * 10) / 10 : 0;
-    const votesCount = ratingData.length > 0 ? ratingData[0].total : 0;
-
-    res.json({
-      ...film.toObject(),
-      averageRating: avgRating,
-      votesCount,
-      userRating
-    });
-  } catch (error) {
-    console.error('Ошибка загрузки фильма:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// ===== ПОЛЬЗОВАТЕЛИ =====
-
-// Получить всех пользователей, оценивших фильм
-app.get('/api/films/:id/users', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const filmId = req.params.id;
-    const ratings = await Rating.find({ filmId })
-      .populate('userId', 'nickname email avatar')
-      .select('userId finalScore technicalScore subjectiveM base1 base2 base3 base4 textReview');
-    
-    const users = ratings.map(r => ({
-      user: {
-        id: r.userId._id,
-        nickname: r.userId.nickname,
-        avatar: r.userId.avatar,
-        // email скрываем для чужих пользователей
-        email: undefined
-      },
-      rating: {
-        id: r._id,
-        finalScore: r.finalScore,
-        technicalScore: r.technicalScore,
-        subjectiveM: r.subjectiveM,
-        base1: r.base1,
-        base2: r.base2,
-        base3: r.base3,
-        base4: r.base4,
-        textReview: r.textReview
-      }
-    }));
-    
-    res.json(users);
-  } catch (error) {
-    console.error('Ошибка загрузки пользователей фильма:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// Получить профиль пользователя с его оценками
-app.get('/api/users/:id', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const userId = req.params.id;
-    const user = await User.findById(userId).select('-password');
-    if (!user) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-    
-    const ratings = await Rating.find({ userId })
-      .populate('filmId', 'title poster year');
-    
-    // Скрываем email для чужих пользователей
-    const isOwnProfile = req.headers.authorization?.split(' ')[1] ? 
-      (() => {
-        try {
-          const decoded = jwt.verify(req.headers.authorization.split(' ')[1], process.env.JWT_SECRET);
-          return decoded.userId === userId;
-        } catch { return false; }
-      })() : false;
-
-    res.json({
-      user: {
-        id: user._id,
-        nickname: user.nickname,
-        avatar: user.avatar,
-        registeredAt: user.registeredAt,
-        email: isOwnProfile ? user.email : undefined
-      },
-      ratings: ratings.map(r => ({
-        id: r._id,
-        film: r.filmId,
-        finalScore: r.finalScore,
-        technicalScore: r.technicalScore,
-        subjectiveM: r.subjectiveM,
-        base1: r.base1,
-        base2: r.base2,
-        base3: r.base3,
-        base4: r.base4,
-        textReview: r.textReview
-      }))
-    });
-  } catch (error) {
-    console.error('Ошибка загрузки профиля пользователя:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// Получить детали одной оценки
-app.get('/api/ratings/:id/details', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const rating = await Rating.findById(req.params.id)
-      .populate('userId', 'nickname')
-      .populate('filmId', 'title poster');
-    
-    if (!rating) {
-      return res.status(404).json({ error: 'Оценка не найдена' });
-    }
-    
-    res.json(rating);
-  } catch (error) {
-    console.error('Ошибка загрузки деталей оценки:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// ===== TMDB ИНТЕГРАЦИЯ =====
-
-app.get('/api/tmdb/search', [
-  body('query').notEmpty().withMessage('Введите поисковый запрос')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { query } = req.query;
-    const apiKey = process.env.TMDB_API_KEY;
-    const response = await fetch(
-      `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(query)}&language=ru-RU`
-    );
-    const data = await response.json();
-    res.json(data);
-  } catch (error) {
-    console.error('Ошибка поиска в TMDB:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.post('/api/films/import', [
-  body('tmdbId').isInt({ min: 1 }).withMessage('Некорректный ID фильма')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { tmdbId } = req.body;
-    const apiKey = process.env.TMDB_API_KEY;
-
-    // Получаем данные из TMDB
-    const filmResponse = await fetch(
-      `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`
-    );
-    const filmData = await filmResponse.json();
-
-    if (!filmData.title) {
-      return res.status(404).json({ error: 'Фильм не найден в TMDB' });
-    }
-
-    // Используем findOneAndUpdate с upsert для избежания race condition
-    const filmDataForSave = {
-      tmdbId: filmData.id,
-      title: filmData.title,
-      year: new Date(filmData.release_date).getFullYear(),
-      poster: filmData.poster_path ? `https://image.tmdb.org/t/p/w500${filmData.poster_path}` : '',
-      description: (filmData.overview || '').slice(0, 1000),
-      genres: filmData.genres?.map(g => g.name) || [],
-      director: filmData.credits?.crew?.find(c => c.job === 'Director')?.name || 'Неизвестен',
-      actors: filmData.credits?.cast?.slice(0, 5).map(a => a.name) || [],
-      trailer: filmData.videos?.results?.find(v => v.type === 'Trailer')?.key 
-        ? `https://www.youtube.com/embed/${filmData.videos.results.find(v => v.type === 'Trailer').key}`
-        : '',
-      createdBy: req.userId
-    };
-
-    const film = await Film.findOneAndUpdate(
-      { tmdbId: filmData.id },
-      filmDataForSave,
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
-
-    res.json(film);
-  } catch (error) {
-    console.error('Ошибка импорта фильма:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// ===== ОЦЕНКИ =====
-
-app.post('/api/ratings', [
-  body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
-  body('base1').isArray({ min: 5, max: 5 }).withMessage('Должно быть 5 оценок'),
-  body('base2').isArray({ min: 5, max: 5 }).withMessage('Должно быть 5 оценок'),
-  body('base3').isArray({ min: 5, max: 5 }).withMessage('Должно быть 5 оценок'),
-  body('base4').isArray({ min: 5, max: 5 }).withMessage('Должно быть 5 оценок'),
-  body('subjectiveM').isInt({ min: 1, max: 10 }).withMessage('M должно быть от 1 до 10'),
-  body('textReview').optional().isLength({ max: 2000 }).withMessage('Отзыв не длиннее 2000 символов')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const { filmId, base1, base2, base3, base4, subjectiveM, textReview } = req.body;
-
-    // Проверяем существование фильма
-    const film = await Film.findById(filmId);
-    if (!film) {
-      return res.status(404).json({ error: 'Фильм не найден' });
-    }
-
-    // Проверяем значения критериев
-    const allValues = [...base1, ...base2, ...base3, ...base4];
-    if (allValues.some(v => v < 1 || v > 10)) {
-      return res.status(400).json({ error: 'Все оценки должны быть от 1 до 10' });
-    }
-
-    const { technicalScore, finalScore } = calculateRating(base1, base2, base3, base4, subjectiveM);
-
-    // Используем findOneAndUpdate с upsert
-    const rating = await Rating.findOneAndUpdate(
-      { userId: req.userId, filmId },
-      {
-        userId: req.userId,
-        filmId,
+    try {
+      const response = await api.post('/ratings', {
+        filmId: id,
         base1,
         base2,
         base3,
         base4,
         subjectiveM,
-        technicalScore,
-        finalScore,
-        textReview: textReview || '',
-        updatedAt: new Date()
-      },
-      { 
-        upsert: true, 
-        new: true, 
-        setDefaultsOnInsert: true,
-        runValidators: true
+        textReview
+      });
+      
+      setUserRating(response.data.rating);
+      alert('Оценка сохранена!');
+      await loadFilm();
+      await loadFilmUsers();
+    } catch (err) {
+      alert('Ошибка: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const openRatingDetails = async (ratingData) => {
+    try {
+      if (ratingData.base1 && ratingData.base1.length === 5) {
+        setSelectedRating(ratingData);
+        return;
       }
-    );
-
-    res.json({
-      rating,
-      technicalScore,
-      finalScore
-    });
-  } catch (error) {
-    console.error('Ошибка сохранения оценки:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.get('/api/ratings/user', authenticate, async (req, res) => {
-  try {
-    const ratings = await Rating.find({ userId: req.userId })
-      .populate('filmId')
-      .sort({ createdAt: -1 });
-
-    res.json(ratings);
-  } catch (error) {
-    console.error('Ошибка получения оценок пользователя:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.delete('/api/ratings/:id', [
-  ...validateObjectId('id')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) {
-    return res.status(400).json({ errors: errors.array() });
-  }
-
-  try {
-    const rating = await Rating.findById(req.params.id);
-    
-    if (!rating) {
-      return res.status(404).json({ error: 'Оценка не найдена' });
+      const response = await api.get(`/ratings/${ratingData.id}/details`);
+      setSelectedRating(response.data);
+    } catch (err) {
+      console.error('Ошибка загрузки деталей оценки:', err);
+      alert('Не удалось загрузить детали оценки.');
     }
+  };
 
-    if (rating.userId.toString() !== req.userId) {
-      return res.status(403).json({ error: 'Нет прав на удаление' });
+  const toggleRatingMode = () => {
+    setIsRatingMode(!isRatingMode);
+  };
+
+  if (loading) return <div className="loading">Загрузка...</div>;
+  if (!film) return <div className="error">Фильм не найден</div>;
+
+  const previewScore = calculatePreview();
+
+  return (
+    <div className="container">
+      <div className="film-page">
+        <button onClick={() => navigate('/')} className="back-btn">← На главную</button>
+        
+        <div className="film-header">
+          <img src={film.poster || '/no-poster.jpg'} alt={film.title} className="film-poster-large" />
+          <div className="film-details">
+            <h1>{film.title}</h1>
+            <p className="film-year">{film.year}</p>
+            <p className="film-description">{film.description}</p>
+            <p><strong>Режиссёр:</strong> {film.director}</p>
+            <p><strong>Актёры:</strong> {film.actors?.join(', ') || 'Нет данных'}</p>
+            <div className="film-genres">
+              {film.genres?.map((g, i) => <span key={i} className="genre-tag">{g}</span>)}
+            </div>
+            
+            <div className="film-rating-stats">
+              <div className="avg-rating" style={{ color: getScoreColor(film.averageRating) }}>
+                {film.averageRating ? `${film.averageRating.toFixed(1)}` : 'Нет оценок'}
+              </div>
+              <span>👥 {film.votesCount || 0} оценок</span>
+            </div>
+
+            {userRating && (
+              <div className="your-rating">
+                <h4>Ваша оценка:</h4>
+                <div className="user-rating-display" style={{ color: getScoreColor(userRating.finalScore) }}>
+                  {userRating.finalScore}
+                </div>
+              </div>
+            )}
+
+            <button className="rate-btn" onClick={toggleRatingMode}>
+              {isRatingMode ? 'Скрыть форму' : (userRating ? '✏️ Изменить оценку' : '⭐ Оценить фильм')}
+            </button>
+          </div>
+        </div>
+
+        {usersLoading ? (
+          <div className="loading">Загрузка пользователей...</div>
+        ) : filmUsers.length > 0 ? (
+          <div className="film-users">
+            <h3>Оценили фильм: {filmUsers.length} человек</h3>
+            <div className="users-list">
+              {filmUsers.map((item) => (
+                <div key={`${item.user.id}-${item.rating.id}`} className="user-rating-item">
+                  <Link to={`/user/${item.user.id}`} className="user-link">
+                    👤 {item.user.nickname}
+                  </Link>
+                  <span className="user-rating-score" style={{ color: getScoreColor(item.rating.finalScore) }}>
+                    {item.rating.finalScore}
+                  </span>
+                  <button 
+                    className="details-btn"
+                    onClick={() => openRatingDetails(item.rating)}
+                  >
+                    🔍 Детали
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {isRatingMode && (
+          <div className="rating-form">
+            <h2>Оценка по 20 критериям</h2>
+            <p className="rating-hint">Оценка от 1 до 10 (1 — ужасно, 10 — идеально)</p>
+            
+            {[0, 1, 2, 3].map((baseIndex) => (
+              <div key={baseIndex} className="rating-base">
+                <h3>{baseNames[baseIndex]}</h3>
+                {criteriaNames[baseIndex].map((name, critIndex) => {
+                  const values = [base1, base2, base3, base4];
+                  const value = values[baseIndex][critIndex];
+                  return (
+                    <div key={critIndex} className="criterion">
+                      <label>
+                        {name}
+                        <span className="criterion-hint" title={baseDescriptions[baseIndex][critIndex]}>❓</span>
+                      </label>
+                      <div className="slider-container">
+                        <span>1</span>
+                        <input
+                          type="range"
+                          min="1"
+                          max="10"
+                          step="1"
+                          value={value}
+                          onChange={(e) => handleRatingChange(baseIndex, critIndex, e.target.value)}
+                        />
+                        <span>10</span>
+                        <span className="value-display">{value}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+
+            <div className="subjective-block">
+              <h3>Субъективный множитель (M)</h3>
+              <p>Насколько лично вам понравился фильм, несмотря на технические оценки?</p>
+              <div className="slider-container">
+                <span>1</span>
+                <input
+                  type="range"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={subjectiveM}
+                  onChange={(e) => setSubjectiveM(Number(e.target.value))}
+                />
+                <span>10</span>
+                <span className="value-display">{subjectiveM}</span>
+              </div>
+            </div>
+
+            <div className="text-review">
+              <h3>Текстовый отзыв (необязательно)</h3>
+              <textarea
+                value={textReview}
+                onChange={(e) => setTextReview(e.target.value.slice(0, 1000))}
+                placeholder="Напишите свои впечатления..."
+                rows="4"
+                maxLength={1000}
+              />
+              <div className="char-counter">{textReview.length}/1000</div>
+            </div>
+
+            <div className="rating-preview">
+              <h3>Итоговая оценка:</h3>
+              <div className="preview-score" style={{ color: getScoreColor(previewScore) }}>
+                {previewScore}
+              </div>
+              <div className="score-bar" style={{ 
+                width: `${(previewScore - 6) / 84 * 100}%`,
+                background: `linear-gradient(to right, #ff1744, #ffab00, #00e676)`
+              }}></div>
+              <div className="score-labels">
+                <span>6 (провал)</span>
+                <span>90 (шедевр)</span>
+              </div>
+              <button onClick={saveRating} className="save-rating-btn" disabled={isSaving}>
+                {isSaving ? 'Сохранение...' : '💾 Сохранить оценку'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {film.trailer && (
+          <div className="trailer">
+            <h3>Трейлер</h3>
+            <iframe src={film.trailer} title="Трейлер" allowFullScreen />
+          </div>
+        )}
+      </div>
+
+      <RatingDetailsModal 
+        rating={selectedRating} 
+        onClose={() => setSelectedRating(null)} 
+      />
+    </div>
+  );
+}
+
+// ===== ВХОД / РЕГИСТРАЦИЯ =====
+function LoginPage() {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [nickname, setNickname] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const endpoint = isLogin ? '/auth/login' : '/auth/register';
+      const data = isLogin ? { email, password } : { email, password, nickname };
+      
+      const response = await api.post(endpoint, data);
+      localStorage.setItem('token', response.data.token);
+      navigate('/');
+    } catch (err) {
+      setError(err.response?.data?.error || 'Произошла ошибка');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    await Rating.findByIdAndDelete(req.params.id);
-    res.json({ message: 'Оценка удалена' });
-  } catch (error) {
-    console.error('Ошибка удаления оценки:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
+  return (
+    <div className="container auth-container">
+      <div className="auth-box">
+        <h1>{isLogin ? 'Вход в Синефилиум' : 'Регистрация'}</h1>
+        {error && <div className="error-msg">{error}</div>}
+        <form onSubmit={handleSubmit}>
+          <input
+            type="email"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+          />
+          {!isLogin && (
+            <input
+              type="text"
+              placeholder="Никнейм"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              required
+            />
+          )}
+          <input
+            type="password"
+            placeholder="Пароль"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+          <button type="submit" disabled={loading}>
+            {loading ? 'Загрузка...' : (isLogin ? 'Войти' : 'Зарегистрироваться')}
+          </button>
+        </form>
+        <p onClick={() => { setIsLogin(!isLogin); setError(''); }} className="toggle-auth">
+          {isLogin ? 'Нет аккаунта? Зарегистрируйтесь' : 'Уже есть аккаунт? Войдите'}
+        </p>
+      </div>
+    </div>
+  );
+}
 
-// ===== ЗАПУСК СЕРВЕРА =====
+// ===== ПРОФИЛЬ ПОЛЬЗОВАТЕЛЯ =====
+function ProfilePage() {
+  const [user, setUser] = useState(null);
+  const [ratings, setRatings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRating, setSelectedRating] = useState(null);
+  const navigate = useNavigate();
 
-const PORT = process.env.PORT || 3000;
-const MONGODB_URI = process.env.MONGODB_URI;
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      navigate('/login');
+      return;
+    }
+    loadProfile();
+  }, []);
 
-mongoose.connect(MONGODB_URI)
-  .then(() => {
-    console.log('✅ Подключено к MongoDB');
-    app.listen(PORT, () => {
-      console.log(`✅ Сервер запущен на порту ${PORT}`);
-    });
-  })
-  .catch(err => {
-    console.error('❌ Ошибка подключения к MongoDB:', err);
-    process.exit(1);
-  });
-    
+  const loadProfile = async () => {
+    try {
+      const userResponse = await api.get('/auth/me');
+      setUser(userResponse.data);
+
+      const ratingsResponse = await api.get('/ratings/user');
+      setRatings(ratingsResponse.data || []);
+    } catch (err) {
+      console.error('Ошибка загрузки профиля:', err);
+      if (err.response?.status === 401) {
+        localStorage.removeItem('token');
+        navigate('/login');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    navigate('/');
+  };
+
+  const openRatingDetails = async (rating) => {
+    try {
+      const response = await api.get(`/ratings/${rating._id}/details`);
+      setSelectedRating(response.data);
+    } catch (err) {
+      console.error('Ошибка загрузки деталей оценки:', err);
+      alert('Не удалось загрузить детали оценки.');
+    }
+  };
+
+  if (loading) return <div className="loading">Загрузка...</div>;
+  if (!user) return <div className="error">Не удалось загрузить профиль</div>;
+
+  return (
+    <div className="container profile-page">
+      <button onClick={() => navigate('/')} className="back-btn">← На главную</button>
+      
+      <div className="profile-header">
+        <div className="profile-avatar">
+          <div className="avatar-placeholder">{user.nickname[0]}</div>
+        </div>
+        <div className="profile-info">
+          <h1>{user.nickname}</h1>
+          <p>📧 {user.email}</p>
+          <p>⭐ Всего оценок: {ratings.length}</p>
+          <button onClick={logout} className="logout-btn">🚪 Выйти</button>
+        </div>
+      </div>
+
+      <div className="profile-ratings">
+        <h2>Мои оценки</h2>
+        {ratings.length === 0 ? (
+          <p>Вы еще не оценили ни одного фильма</p>
+        ) : (
+          <div className="ratings-list">
+            {ratings.map((rating) => (
+              <div key={rating._id} className="rating-item">
+                <Link to={`/film/${rating.filmId._id}`}>
+                  <div className="rating-film-info">
+                    <img src={rating.filmId.poster || '/no-poster.jpg'} alt={rating.filmId.title} className="rating-poster-small" />
+                    <div>
+                      <h4>{rating.filmId.title}</h4>
+                      <p>{rating.filmId.year}</p>
+                    </div>
+                  </div>
+                </Link>
+                <div className="rating-score" style={{ color: getScoreColor(rating.finalScore) }}>
+                  {rating.finalScore}
+                </div>
+                <button 
+                  className="details-btn"
+                  onClick={() => openRatingDetails(rating)}
+                >
+                  🔍 Детали
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <RatingDetailsModal 
+        rating={selectedRating} 
+        onClose={() => setSelectedRating(null)} 
+      />
+    </div>
+  );
+}
+
+// ===== ПРОФИЛЬ ДРУГОГО ПОЛЬЗОВАТЕЛЯ =====
+function UserProfilePage() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+  const [user, setUser] = useState(null);
+  const [ratings, setRatings] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedRating, setSelectedRating] = useState(null);
+
+  useEffect(() => {
+    loadUserProfile();
+  }, [id]);
+
+  const loadUserProfile = async () => {
+    try {
+      const response = await api.get(`/users/${id}`);
+      setUser(response.data.user);
+      setRatings(response.data.ratings || []);
+    } catch (err) {
+      console.error('Ошибка загрузки профиля:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const openRatingDetails = async (rating) => {
+    try {
+      const response = await api.get(`/ratings/${rating.id}/details`);
+      setSelectedRating(response.data);
+    } catch (err) {
+      console.error('Ошибка загрузки деталей оценки:', err);
+      alert('Не удалось загрузить детали оценки.');
+    }
+  };
+
+  if (loading) return <div className="loading">Загрузка...</div>;
+  if (!user) return <div className="error">Пользователь не найден</div>;
+
+  return (
+    <div className="container profile-page">
+      <button onClick={() => navigate('/')} className="back-btn">← На главную</button>
+      
+      <div className="profile-header">
+        <div className="profile-avatar">
+          <div className="avatar-placeholder">{user.nickname[0]}</div>
+        </div>
+        <div className="profile-info">
+          <h1>{user.nickname}</h1>
+          <p>📅 Зарегистрирован: {new Date(user.registeredAt).toLocaleDateString()}</p>
+          <p>⭐ Всего оценок: {ratings.length}</p>
+        </div>
+      </div>
+
+      <div className="profile-ratings">
+        <h2>Оценки пользователя</h2>
+        {ratings.length === 0 ? (
+          <p>Пользователь еще не оценил ни одного фильма</p>
+        ) : (
+          <div className="ratings-list">
+            {ratings.map((rating) => (
+              <div key={rating.id} className="rating-item">
+                <Link to={`/film/${rating.film._id}`}>
+                  <div className="rating-film-info">
+                    <img src={rating.film.poster || '/no-poster.jpg'} alt={rating.film.title} className="rating-poster-small" />
+                    <div>
+                      <h4>{rating.film.title}</h4>
+                      <p>{rating.film.year}</p>
+                    </div>
+                  </div>
+                </Link>
+                <div className="rating-score" style={{ color: getScoreColor(rating.finalScore) }}>
+                  {rating.finalScore}
+                </div>
+                <button 
+                  className="details-btn"
+                  onClick={() => openRatingDetails(rating)}
+                >
+                  🔍 Детали
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <RatingDetailsModal 
+        rating={selectedRating} 
+        onClose={() => setSelectedRating(null)} 
+      />
+    </div>
+  );
+}
+
+// ===== ГЛАВНОЕ ПРИЛОЖЕНИЕ =====
+function App() {
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/film/:id" element={<FilmPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/user/:id" element={<UserProfilePage />} />
+      </Routes>
+    </Router>
+  );
+}
+
+export default App;
