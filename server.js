@@ -898,6 +898,100 @@ app.get('/api/users/:id', [
 });
 
 // ============================================================
+// МОДЕРАЦИЯ (АДМИН-ПАНЕЛЬ)
+// ============================================================
+
+// ----- Получить комментарии на модерации -----
+app.get('/api/admin/pending/comments', authenticate, isAdmin, async (req, res) => {
+  try {
+    const comments = await Comment.find({ status: 'pending' })
+      .populate('userId', 'nickname')
+      .populate('filmId', 'title');
+    res.json(comments);
+  } catch (error) {
+    console.error('Ошибка загрузки комментариев на модерацию:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- Получить рецензии на модерации -----
+app.get('/api/admin/pending/reviews', authenticate, isAdmin, async (req, res) => {
+  try {
+    const reviews = await Review.find({ status: 'pending' })
+      .populate('userId', 'nickname')
+      .populate('filmId', 'title');
+    res.json(reviews);
+  } catch (error) {
+    console.error('Ошибка загрузки рецензий на модерацию:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- Одобрить комментарий -----
+app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
+  try {
+    const comment = await Comment.findByIdAndUpdate(
+      req.params.id,
+      { status: 'approved' },
+      { new: true }
+    ).populate('userId', 'nickname');
+    if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+    res.json(comment);
+  } catch (error) {
+    console.error('Ошибка одобрения комментария:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- Отклонить комментарий -----
+app.put('/api/admin/comments/:id/reject', authenticate, isAdmin, async (req, res) => {
+  try {
+    const comment = await Comment.findByIdAndUpdate(
+      req.params.id,
+      { status: 'rejected' },
+      { new: true }
+    ).populate('userId', 'nickname');
+    if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+    res.json(comment);
+  } catch (error) {
+    console.error('Ошибка отклонения комментария:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- Одобрить рецензию -----
+app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
+  try {
+    const review = await Review.findByIdAndUpdate(
+      req.params.id,
+      { status: 'approved' },
+      { new: true }
+    ).populate('userId', 'nickname').populate('filmId', 'title');
+    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    res.json(review);
+  } catch (error) {
+    console.error('Ошибка одобрения рецензии:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- Отклонить рецензию -----
+app.put('/api/admin/reviews/:id/reject', authenticate, isAdmin, async (req, res) => {
+  try {
+    const review = await Review.findByIdAndUpdate(
+      req.params.id,
+      { status: 'rejected' },
+      { new: true }
+    ).populate('userId', 'nickname').populate('filmId', 'title');
+    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    res.json(review);
+  } catch (error) {
+    console.error('Ошибка отклонения рецензии:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ============================================================
 // ЗАПУСК СЕРВЕРА
 // ============================================================
 
