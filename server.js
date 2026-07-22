@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { body, validationResult, param, query } = require('express-validator');
+const { body, validationResult, param } = require('express-validator');
 
 const app = express();
 app.use(cors());
@@ -52,7 +52,6 @@ const filmSchema = new mongoose.Schema({
   actors: [String],
   trailer: String,
   createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
@@ -98,8 +97,8 @@ const reviewSchema = new mongoose.Schema({
 
 // ----- ДЕЙСТВИЯ (для топа) -----
 const actionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },          // владелец контента (получатель очков)
+  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },        // кто совершил действие
   type: { type: String, enum: ['rating', 'review', 'comment', 'like', 'import', 'admin_bonus'], required: true },
   points: { type: Number, required: true },
   refId: { type: mongoose.Schema.Types.ObjectId },
@@ -256,13 +255,7 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ФИЛЬМЫ
 // ============================================================
 
-app.get('/api/films', [
-  query('page').optional().isInt({ min: 1 }).withMessage('Страница должна быть положительным числом'),
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Лимит должен быть от 1 до 100')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
+app.get('/api/films', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 20;
   const skip = (page - 1) * limit;
@@ -370,11 +363,8 @@ app.post('/api/comments', [
     if (!filmExists) return res.status(404).json({ error: 'Фильм не найден' });
 
     if (parentId) {
-      const parentComment = await Comment.findById(parentId);
-      if (!parentComment) return res.status(404).json({ error: 'Родительский комментарий не найден' });
-      if (parentComment.filmId.toString() !== filmId) {
-        return res.status(400).json({ error: 'Родительский комментарий не относится к этому фильму' });
-      }
+      const parentExists = await existsById(Comment, parentId);
+      if (!parentExists) return res.status(404).json({ error: 'Родительский комментарий не найден' });
     }
 
     const comment = new Comment({ userId: req.userId, filmId, text, parentId });
@@ -392,23 +382,15 @@ app.post('/api/comments', [
 });
 
 app.get('/api/comments/:filmId', [
-  ...validateObjectId('filmId'),
-  query('page').optional().isInt({ min: 1 }).withMessage('Страница должна быть положительным числом'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Лимит должен быть от 1 до 50')
+  ...validateObjectId('filmId')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
-
     const comments = await Comment.find({ filmId: req.params.filmId, parentId: null })
       .populate('userId', 'nickname isAdmin')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
+      .sort({ createdAt: -1 });
 
     const commentIds = comments.map(c => c._id);
     const replies = await Comment.find({ parentId: { $in: commentIds } })
@@ -420,14 +402,7 @@ app.get('/api/comments/:filmId', [
       replies: replies.filter(r => r.parentId.toString() === c._id.toString())
     }));
 
-    const total = await Comment.countDocuments({ filmId: req.params.filmId, parentId: null });
-
-    res.json({
-      comments: commentsWithReplies,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit)
-    });
+    res.json(commentsWithReplies);
   } catch (error) {
     console.error('Ошибка загрузки комментариев:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
@@ -443,11 +418,6 @@ app.post('/api/comments/:id/like', [
   try {
     const comment = await Comment.findById(req.params.id);
     if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
-
-    // Запрет лайка своего контента
-    if (comment.userId.toString() === req.userId) {
-      return res.status(400).json({ error: 'Нельзя лайкать свой комментарий' });
-    }
 
     const likeIndex = comment.likes.indexOf(req.userId);
     if (likeIndex > -1) {
@@ -490,10 +460,6 @@ app.post('/api/reviews', [
     const rating = await Rating.findOne({ _id: ratingId, userId: req.userId });
     if (!rating) return res.status(403).json({ error: 'Вы не можете использовать чужую оценку для рецензии' });
 
-    if (rating.filmId.toString() !== filmId) {
-      return res.status(400).json({ error: 'Оценка не относится к указанному фильму' });
-    }
-
     const existing = await Review.findOne({ userId: req.userId, filmId });
     if (existing) return res.status(400).json({ error: 'Вы уже написали рецензию на этот фильм' });
 
@@ -514,33 +480,17 @@ app.post('/api/reviews', [
 });
 
 app.get('/api/reviews/:filmId', [
-  ...validateObjectId('filmId'),
-  query('page').optional().isInt({ min: 1 }).withMessage('Страница должна быть положительным числом'),
-  query('limit').optional().isInt({ min: 1, max: 50 }).withMessage('Лимит должен быть от 1 до 50')
+  ...validateObjectId('filmId')
 ], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
-
     const reviews = await Review.find({ filmId: req.params.filmId })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
-    const total = await Review.countDocuments({ filmId: req.params.filmId });
-
-    res.json({
-      reviews,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit)
-    });
+      .sort({ createdAt: -1 });
+    res.json(reviews);
   } catch (error) {
     console.error('Ошибка загрузки рецензий:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
@@ -576,11 +526,6 @@ app.post('/api/reviews/:id/like', [
     const review = await Review.findById(req.params.id);
     if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
 
-    // Запрет лайка своего контента
-    if (review.userId.toString() === req.userId) {
-      return res.status(400).json({ error: 'Нельзя лайкать свою рецензию' });
-    }
-
     const likeIndex = review.likes.indexOf(req.userId);
     if (likeIndex > -1) {
       review.likes.splice(likeIndex, 1);
@@ -604,12 +549,7 @@ app.post('/api/reviews/:id/like', [
 // ТОП ПОЛЬЗОВАТЕЛЕЙ
 // ============================================================
 
-app.get('/api/top/users', [
-  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Лимит должен быть от 1 до 100')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
+app.get('/api/top/users', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
     const users = await User.aggregate([
@@ -740,7 +680,25 @@ app.get('/api/ratings/user', authenticate, async (req, res) => {
       .sort({ createdAt: -1 });
     res.json(ratings);
   } catch (error) {
-    console.error('Ошибка загрузки оценок пользователя:', error);
+    console.error('Ошибка получения оценок:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+app.get('/api/ratings/:id/details', [
+  ...validateObjectId('id')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    const rating = await Rating.findById(req.params.id)
+      .populate('userId', 'nickname isAdmin')
+      .populate('filmId', 'title poster');
+    if (!rating) return res.status(404).json({ error: 'Оценка не найдена' });
+    res.json(rating);
+  } catch (error) {
+    console.error('Ошибка загрузки деталей:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
@@ -794,7 +752,7 @@ app.post('/api/admin/make', [
 // ============================================================
 
 app.get('/api/tmdb/search', async (req, res) => {
-  const query = req.query.query;
+  const query = req.query.query || req.body.query;
   if (!query || query.trim() === '') {
     return res.status(400).json({ error: 'Введите поисковый запрос' });
   }
@@ -833,19 +791,10 @@ app.post('/api/films/import', [
     const filmData = await filmResponse.json();
     if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
 
-    // Безопасное получение года
-    let year = undefined;
-    if (filmData.release_date) {
-      const dateObj = new Date(filmData.release_date);
-      if (!isNaN(dateObj.getTime())) {
-        year = dateObj.getFullYear();
-      }
-    }
-
     const filmDataForSave = {
       tmdbId: filmData.id,
       title: filmData.title,
-      year: year,
+      year: new Date(filmData.release_date).getFullYear(),
       poster: filmData.poster_path ? `https://image.tmdb.org/t/p/w500${filmData.poster_path}` : '',
       description: (filmData.overview || '').slice(0, 1000),
       genres: filmData.genres?.map(g => g.name) || [],
@@ -854,8 +803,7 @@ app.post('/api/films/import', [
       trailer: filmData.videos?.results?.find(v => v.type === 'Trailer')?.key 
         ? `https://www.youtube.com/embed/${filmData.videos.results.find(v => v.type === 'Trailer').key}`
         : '',
-      createdBy: req.userId,
-      updatedAt: new Date()
+      createdBy: req.userId
     };
 
     let film = await Film.findOne({ tmdbId: filmData.id });
@@ -866,12 +814,7 @@ app.post('/api/films/import', [
       await film.save();
       isNew = true;
     } else {
-      // ✅ ИСПРАВЛЕНО: присваиваем результат обновления переменной film
-      film = await Film.findOneAndUpdate(
-        { tmdbId: filmData.id },
-        filmDataForSave,
-        { new: true }
-      );
+      await Film.findOneAndUpdate({ tmdbId: filmData.id }, filmDataForSave);
     }
 
     if (isNew) {
@@ -950,24 +893,6 @@ app.get('/api/users/:id', [
     });
   } catch (error) {
     console.error('Ошибка загрузки профиля:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-app.get('/api/ratings/:id/details', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
-  try {
-    const rating = await Rating.findById(req.params.id)
-      .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster');
-    if (!rating) return res.status(404).json({ error: 'Оценка не найдена' });
-    res.json(rating);
-  } catch (error) {
-    console.error('Ошибка загрузки оценки:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
