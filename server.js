@@ -7,7 +7,10 @@ const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  credentials: true
+}));
 app.use(express.json());
 
 // ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
@@ -31,7 +34,13 @@ mongoose.set('strictQuery', false);
 
 // ----- ПОЛЬЗОВАТЕЛИ -----
 const userSchema = new mongoose.Schema({
-  email: { type: String, unique: true, required: true, maxlength: 100 },
+  email: { 
+    type: String, 
+    unique: true, 
+    required: true, 
+    maxlength: 100,
+    match: [/^\S+@\S+\.\S+$/, 'Некорректный email']
+  },
   password: { type: String, required: true },
   nickname: { type: String, unique: true, required: true, maxlength: 50 },
   avatar: { type: String, default: '' },
@@ -79,6 +88,7 @@ const commentSchema = new mongoose.Schema({
   text: { type: String, required: true, maxlength: 1000 },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment', default: null },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -91,17 +101,27 @@ const reviewSchema = new mongoose.Schema({
   title: { type: String, required: true, maxlength: 100 },
   text: { type: String, required: true, maxlength: 5000 },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
 // ----- ДЕЙСТВИЯ (для топа) -----
 const actionSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },          // владелец контента (получатель очков)
-  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },        // кто совершил действие
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   type: { type: String, enum: ['rating', 'review', 'comment', 'like', 'import', 'admin_bonus'], required: true },
   points: { type: Number, required: true },
   refId: { type: mongoose.Schema.Types.ObjectId },
+  createdAt: { type: Date, default: Date.now }
+});
+
+// ----- СОБЫТИЯ (для ленты активности) -----
+const eventSchema = new mongoose.Schema({
+  type: { type: String, required: true, enum: ['rating', 'review', 'comment', 'film_add'] },
+  user: { type: String, required: true },
+  film: { type: String, required: true },
+  score: { type: Number, default: null },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -112,6 +132,7 @@ ratingSchema.index({ userId: 1 });
 filmSchema.index({ title: 'text' });
 commentSchema.index({ filmId: 1, createdAt: -1 });
 actionSchema.index({ userId: 1, actorId: 1, refId: 1, type: 1 });
+eventSchema.index({ createdAt: -1 });
 
 const User = mongoose.model('User', userSchema);
 const Film = mongoose.model('Film', filmSchema);
@@ -119,6 +140,7 @@ const Rating = mongoose.model('Rating', ratingSchema);
 const Comment = mongoose.model('Comment', commentSchema);
 const Review = mongoose.model('Review', reviewSchema);
 const Action = mongoose.model('Action', actionSchema);
+const Event = mongoose.model('Event', eventSchema);
 
 // ============================================================
 // ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -138,8 +160,12 @@ function calculateRating(base1, base2, base3, base4, subjectiveM) {
 }
 
 async function addPoints(userId, actorId, type, points, refId = null) {
+  const user = await User.findById(userId);
+  if (!user) return false;
+  
   await Action.create({ userId, actorId, type, points, refId });
   await User.findByIdAndUpdate(userId, { $inc: { totalPoints: points } });
+  return true;
 }
 
 async function removePointsByAction(userId, actorId, refId, type) {
@@ -156,6 +182,14 @@ async function existsById(model, id) {
   return await model.findById(id) !== null;
 }
 
+async function createEvent(type, user, film, score = null) {
+  try {
+    await Event.create({ type, user, film, score });
+  } catch (error) {
+    console.error('Ошибка создания события:', error);
+  }
+}
+
 // ============================================================
 // МИДДЛВАРЫ
 // ============================================================
@@ -168,6 +202,7 @@ const authenticate = async (req, res, next) => {
     const user = await User.findById(decoded.userId);
     if (!user) return res.status(401).json({ error: 'Пользователь не найден' });
     req.userId = user._id;
+    req.user = user;
     req.isAdmin = user.isAdmin || false;
     next();
   } catch (error) {
@@ -359,8 +394,8 @@ app.post('/api/comments', [
   try {
     const { filmId, text, parentId } = req.body;
 
-    const filmExists = await existsById(Film, filmId);
-    if (!filmExists) return res.status(404).json({ error: 'Фильм не найден' });
+    const film = await Film.findById(filmId);
+    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
     if (parentId) {
       const parentExists = await existsById(Comment, parentId);
@@ -372,6 +407,9 @@ app.post('/api/comments', [
 
     const points = req.isAdmin ? 10 : 2;
     await addPoints(req.userId, req.userId, 'comment', points, comment._id);
+
+    // Создаем событие
+    await createEvent('comment', req.user.nickname, film.title);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
@@ -388,12 +426,12 @@ app.get('/api/comments/:filmId', [
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const comments = await Comment.find({ filmId: req.params.filmId, parentId: null })
+    const comments = await Comment.find({ filmId: req.params.filmId, parentId: null, status: 'approved' })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: -1 });
 
     const commentIds = comments.map(c => c._id);
-    const replies = await Comment.find({ parentId: { $in: commentIds } })
+    const replies = await Comment.find({ parentId: { $in: commentIds }, status: 'approved' })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: 1 });
 
@@ -454,8 +492,8 @@ app.post('/api/reviews', [
   try {
     const { filmId, ratingId, title, text } = req.body;
 
-    const filmExists = await existsById(Film, filmId);
-    if (!filmExists) return res.status(404).json({ error: 'Фильм не найден' });
+    const film = await Film.findById(filmId);
+    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
     const rating = await Rating.findOne({ _id: ratingId, userId: req.userId });
     if (!rating) return res.status(403).json({ error: 'Вы не можете использовать чужую оценку для рецензии' });
@@ -468,6 +506,9 @@ app.post('/api/reviews', [
 
     const points = req.isAdmin ? 50 : 30;
     await addPoints(req.userId, req.userId, 'review', points, review._id);
+
+    // Создаем событие
+    await createEvent('review', req.user.nickname, film.title);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -486,7 +527,7 @@ app.get('/api/reviews/:filmId', [
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const reviews = await Review.find({ filmId: req.params.filmId })
+    const reviews = await Review.find({ filmId: req.params.filmId, status: 'approved' })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
       .sort({ createdAt: -1 });
@@ -664,6 +705,9 @@ app.post('/api/ratings', [
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
+      
+      // Создаем событие
+      await createEvent('rating', req.user.nickname, film.title, finalScore);
     }
 
     res.json({ rating, technicalScore, finalScore });
@@ -782,12 +826,15 @@ app.post('/api/films/import', [
   try {
     const { tmdbId } = req.body;
     const apiKey = process.env.TMDB_API_KEY;
+    
     const filmResponse = await fetch(
       `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`
     );
+    
     if (!filmResponse.ok) {
       throw new Error(`TMDB API error: ${filmResponse.status}`);
     }
+    
     const filmData = await filmResponse.json();
     if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
 
@@ -820,6 +867,9 @@ app.post('/api/films/import', [
     if (isNew) {
       const points = req.isAdmin ? 5 : 2;
       await addPoints(req.userId, req.userId, 'import', points, film._id);
+      
+      // Создаем событие
+      await createEvent('film_add', req.user.nickname, film.title);
     }
 
     res.json(film);
@@ -988,6 +1038,23 @@ app.put('/api/admin/reviews/:id/reject', authenticate, isAdmin, async (req, res)
   } catch (error) {
     console.error('Ошибка отклонения рецензии:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ============================================================
+// СОБЫТИЯ (Лента активности)
+// ============================================================
+
+// ----- Получить все события -----
+app.get('/api/events', async (req, res) => {
+  try {
+    const events = await Event.find()
+      .sort({ createdAt: -1 })
+      .limit(50);
+    res.json(events);
+  } catch (error) {
+    console.error('Ошибка загрузки событий:', error);
+    res.status(500).json({ error: 'Ошибка загрузки событий' });
   }
 });
 
