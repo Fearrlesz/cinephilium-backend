@@ -71,6 +71,8 @@ const userSchema = new mongoose.Schema({
   avatar: { type: String, default: '' },
   isAdmin: { type: Boolean, default: false },
   totalPoints: { type: Number, default: 0 },
+  // ✅ НОВОЕ ПОЛЕ ДЛЯ ДОСТИЖЕНИЙ
+  achievements: { type: [String], default: [] },
   registeredAt: { type: Date, default: Date.now }
 });
 
