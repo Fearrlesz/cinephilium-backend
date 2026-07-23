@@ -6,13 +6,16 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
 
+// ===== ПОДКЛЮЧЕНИЕ ДОСТИЖЕНИЙ =====
+const { getAchievements } = require('./utils/achievements');
+
 const app = express();
 
 // ===== ДИАГНОСТИКА ПЕРЕМЕННЫХ =====
 console.log('🔍 CLIENT_URL =', process.env.CLIENT_URL || '❌ НЕ УСТАНОВЛЕНА');
 console.log('🔍 TMDB_API_KEY =', process.env.TMDB_API_KEY ? '✅ Есть (первые 10 символов: ' + process.env.TMDB_API_KEY.slice(0, 10) + '...)' : '❌ НЕТ');
 
-// ===== НАСТРОЙКА CORS (ИСПРАВЛЕНА) =====
+// ===== НАСТРОЙКА CORS =====
 const allowedOrigins = [
   process.env.CLIENT_URL,
   'https://cinephilium-frontendnew.vercel.app',
@@ -23,9 +26,7 @@ console.log('✅ Разрешённые CORS-источники:', allowedOrigin
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Разрешаем запросы без origin (например, от curl или мобильных приложений)
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -71,7 +72,6 @@ const userSchema = new mongoose.Schema({
   avatar: { type: String, default: '' },
   isAdmin: { type: Boolean, default: false },
   totalPoints: { type: Number, default: 0 },
-  // ✅ НОВОЕ ПОЛЕ ДЛЯ ДОСТИЖЕНИЙ
   achievements: { type: [String], default: [] },
   registeredAt: { type: Date, default: Date.now }
 });
@@ -214,6 +214,30 @@ async function createEvent(type, user, film, score = null) {
     await Event.create({ type, user, film, score });
   } catch (error) {
     console.error('Ошибка создания события:', error);
+  }
+}
+
+// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ =====
+async function updateAchievements(userId) {
+  try {
+    const ratingsCount = await Rating.countDocuments({ userId });
+    const reviewsCount = await Review.countDocuments({ userId });
+    const commentsCount = await Comment.countDocuments({ userId });
+    
+    const newAchievements = getAchievements(ratingsCount, reviewsCount, commentsCount);
+    
+    const user = await User.findById(userId);
+    if (!user) return;
+    
+    const currentAchievements = user.achievements || [];
+    const allAchievements = [...new Set([...currentAchievements, ...newAchievements])];
+    
+    if (allAchievements.length !== currentAchievements.length) {
+      await User.findByIdAndUpdate(userId, { achievements: allAchievements });
+      console.log(`🎮 Пользователь ${user.nickname} получил новые достижения!`);
+    }
+  } catch (error) {
+    console.error('❌ Ошибка обновления достижений:', error);
   }
 }
 
@@ -434,8 +458,9 @@ app.post('/api/comments', [
 
     const points = req.isAdmin ? 10 : 2;
     await addPoints(req.userId, req.userId, 'comment', points, comment._id);
-
     await createEvent('comment', req.user.nickname, film.title);
+
+    await updateAchievements(req.userId);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
@@ -473,6 +498,9 @@ app.get('/api/comments/:filmId', [
   }
 });
 
+// ============================================================
+// ЛАЙК КОММЕНТАРИЯ (НЕОТМЕНЯЕМЫЙ)
+// ============================================================
 app.post('/api/comments/:id/like', [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
@@ -483,19 +511,24 @@ app.post('/api/comments/:id/like', [
     const comment = await Comment.findById(req.params.id);
     if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
 
-    const likeIndex = comment.likes.indexOf(req.userId);
-    if (likeIndex > -1) {
-      comment.likes.splice(likeIndex, 1);
-      await comment.save();
-      await removePointsByAction(comment.userId, req.userId, comment._id, 'like');
-      res.json({ liked: false, likes: comment.likes.length });
-    } else {
-      comment.likes.push(req.userId);
-      await comment.save();
-      const points = req.isAdmin ? 3 : 1;
-      await addPoints(comment.userId, req.userId, 'like', points, comment._id);
-      res.json({ liked: true, likes: comment.likes.length });
+    // ❌ ЗАПРЕТ ЛАЙКАТЬ СЕБЯ
+    if (comment.userId.equals(req.userId)) {
+      return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
+
+    // Проверяем, ставил ли уже лайк
+    if (comment.likes.includes(req.userId)) {
+      return res.status(400).json({ error: 'Вы уже лайкнули этот комментарий' });
+    }
+
+    // Ставим лайк
+    comment.likes.push(req.userId);
+    await comment.save();
+
+    const points = req.isAdmin ? 3 : 1;
+    await addPoints(comment.userId, req.userId, 'like', points, comment._id);
+
+    res.json({ liked: true, likes: comment.likes.length });
   } catch (error) {
     console.error('Ошибка лайка комментария:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
@@ -532,8 +565,9 @@ app.post('/api/reviews', [
 
     const points = req.isAdmin ? 50 : 30;
     await addPoints(req.userId, req.userId, 'review', points, review._id);
-
     await createEvent('review', req.user.nickname, film.title);
+
+    await updateAchievements(req.userId);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -582,6 +616,9 @@ app.get('/api/reviews/details/:id', [
   }
 });
 
+// ============================================================
+// ЛАЙК РЕЦЕНЗИИ (НЕОТМЕНЯЕМЫЙ)
+// ============================================================
 app.post('/api/reviews/:id/like', [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
@@ -592,19 +629,24 @@ app.post('/api/reviews/:id/like', [
     const review = await Review.findById(req.params.id);
     if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
 
-    const likeIndex = review.likes.indexOf(req.userId);
-    if (likeIndex > -1) {
-      review.likes.splice(likeIndex, 1);
-      await review.save();
-      await removePointsByAction(review.userId, req.userId, review._id, 'like');
-      res.json({ liked: false, likes: review.likes.length });
-    } else {
-      review.likes.push(req.userId);
-      await review.save();
-      const points = req.isAdmin ? 20 : 5;
-      await addPoints(review.userId, req.userId, 'like', points, review._id);
-      res.json({ liked: true, likes: review.likes.length });
+    // ❌ ЗАПРЕТ ЛАЙКАТЬ СЕБЯ
+    if (review.userId.equals(req.userId)) {
+      return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
+
+    // Проверяем, ставил ли уже лайк
+    if (review.likes.includes(req.userId)) {
+      return res.status(400).json({ error: 'Вы уже лайкнули эту рецензию' });
+    }
+
+    // Ставим лайк
+    review.likes.push(req.userId);
+    await review.save();
+
+    const points = req.isAdmin ? 20 : 5;
+    await addPoints(review.userId, req.userId, 'like', points, review._id);
+
+    res.json({ liked: true, likes: review.likes.length });
   } catch (error) {
     console.error('Ошибка лайка рецензии:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
@@ -732,6 +774,8 @@ app.post('/api/ratings', [
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
       await createEvent('rating', req.user.nickname, film.title, finalScore);
     }
+
+    await updateAchievements(req.userId);
 
     res.json({ rating, technicalScore, finalScore });
   } catch (error) {
@@ -935,6 +979,7 @@ app.get('/api/users/:id', [
         registeredAt: user.registeredAt,
         isAdmin: user.isAdmin,
         totalPoints: user.totalPoints,
+        achievements: user.achievements || [],
         email: isOwnProfile ? user.email : undefined
       },
       ratings: ratings.map(r => ({
