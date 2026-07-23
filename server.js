@@ -60,10 +60,10 @@ mongoose.set('strictQuery', false);
 
 // ----- ПОЛЬЗОВАТЕЛИ -----
 const userSchema = new mongoose.Schema({
-  email: { 
-    type: String, 
-    unique: true, 
-    required: true, 
+  email: {
+    type: String,
+    unique: true,
+    required: true,
     maxlength: 100,
     match: [/^\S+@\S+\.\S+$/, 'Некорректный email']
   },
@@ -108,19 +108,19 @@ const ratingSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// ----- КОММЕНТАРИИ -----
+// ----- КОММЕНТАРИИ (статус по умолчанию — pending) -----
 const commentSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
   text: { type: String, required: true, maxlength: 1000 },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   parentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Comment', default: null },
-  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
 
-// ----- РЕЦЕНЗИИ -----
+// ----- РЕЦЕНЗИИ (статус по умолчанию — pending) -----
 const reviewSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
@@ -128,7 +128,7 @@ const reviewSchema = new mongoose.Schema({
   title: { type: String, required: true, maxlength: 100 },
   text: { type: String, required: true, maxlength: 5000 },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'approved' },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });
@@ -143,12 +143,14 @@ const actionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// ----- СОБЫТИЯ (для ленты активности) -----
+// ----- СОБЫТИЯ (для ленты активности) — с filmId и contentId -----
 const eventSchema = new mongoose.Schema({
   type: { type: String, required: true, enum: ['rating', 'review', 'comment', 'film_add'] },
   user: { type: String, required: true },
   film: { type: String, required: true },
+  filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true }, // добавлено
   score: { type: Number, default: null },
+  contentId: { type: mongoose.Schema.Types.ObjectId }, // добавлено (ID комментария, рецензии или оценки)
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -189,7 +191,7 @@ function calculateRating(base1, base2, base3, base4, subjectiveM) {
 async function addPoints(userId, actorId, type, points, refId = null) {
   const user = await User.findById(userId);
   if (!user) return false;
-  
+
   await Action.create({ userId, actorId, type, points, refId });
   await User.findByIdAndUpdate(userId, { $inc: { totalPoints: points } });
   return true;
@@ -209,29 +211,30 @@ async function existsById(model, id) {
   return await model.findById(id) !== null;
 }
 
-async function createEvent(type, user, film, score = null) {
+// Обновлённая функция создания события с filmId и contentId
+async function createEvent(type, user, film, filmId, score = null, contentId = null) {
   try {
-    await Event.create({ type, user, film, score });
+    await Event.create({ type, user, film, filmId, score, contentId });
   } catch (error) {
     console.error('Ошибка создания события:', error);
   }
 }
 
-// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ =====
+// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ (только одобренные) =====
 async function updateAchievements(userId) {
   try {
     const ratingsCount = await Rating.countDocuments({ userId });
-    const reviewsCount = await Review.countDocuments({ userId });
-    const commentsCount = await Comment.countDocuments({ userId });
-    
+    const reviewsCount = await Review.countDocuments({ userId, status: 'approved' });
+    const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
+
     const newAchievements = getAchievements(ratingsCount, reviewsCount, commentsCount);
-    
+
     const user = await User.findById(userId);
     if (!user) return;
-    
+
     const currentAchievements = user.achievements || [];
     const allAchievements = [...new Set([...currentAchievements, ...newAchievements])];
-    
+
     if (allAchievements.length !== currentAchievements.length) {
       await User.findByIdAndUpdate(userId, { achievements: allAchievements });
       console.log(`🎮 Пользователь ${user.nickname} получил новые достижения!`);
@@ -430,6 +433,31 @@ app.get('/api/films/:id', [
   }
 });
 
+// ===== ПОИСК ФИЛЬМА ПО НАЗВАНИЮ (для переходов из событий) =====
+app.get('/api/films/search-by-title', async (req, res) => {
+  try {
+    const title = req.query.title;
+    if (!title) {
+      return res.status(400).json({ error: 'Название фильма не указано' });
+    }
+
+    let film = await Film.findOne({ title: title });
+    if (!film) {
+      // Частичное совпадение (регистронезависимо)
+      film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
+    }
+
+    if (!film) {
+      return res.status(404).json({ error: 'Фильм не найден' });
+    }
+
+    res.json(film);
+  } catch (error) {
+    console.error('Ошибка поиска фильма по названию:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ============================================================
 // КОММЕНТАРИИ
 // ============================================================
@@ -453,14 +481,9 @@ app.post('/api/comments', [
       if (!parentExists) return res.status(404).json({ error: 'Родительский комментарий не найден' });
     }
 
-    const comment = new Comment({ userId: req.userId, filmId, text, parentId });
+    // Создаём комментарий со статусом pending (без начисления баллов)
+    const comment = new Comment({ userId: req.userId, filmId, text, parentId, status: 'pending' });
     await comment.save();
-
-    const points = req.isAdmin ? 10 : 2;
-    await addPoints(req.userId, req.userId, 'comment', points, comment._id);
-    await createEvent('comment', req.user.nickname, film.title);
-
-    await updateAchievements(req.userId);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
@@ -477,12 +500,32 @@ app.get('/api/comments/:filmId', [
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const comments = await Comment.find({ filmId: req.params.filmId, parentId: null, status: 'approved' })
+    // Определяем, является ли пользователь админом (показываем все статусы)
+    let isAdmin = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.userId);
+        isAdmin = user?.isAdmin || false;
+      } catch (e) {}
+    }
+
+    const statusFilter = isAdmin ? {} : { status: 'approved' };
+
+    const comments = await Comment.find({
+      filmId: req.params.filmId,
+      parentId: null,
+      ...statusFilter
+    })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: -1 });
 
     const commentIds = comments.map(c => c._id);
-    const replies = await Comment.find({ parentId: { $in: commentIds }, status: 'approved' })
+    const replies = await Comment.find({
+      parentId: { $in: commentIds },
+      ...statusFilter
+    })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: 1 });
 
@@ -511,17 +554,14 @@ app.post('/api/comments/:id/like', [
     const comment = await Comment.findById(req.params.id);
     if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
 
-    // ❌ ЗАПРЕТ ЛАЙКАТЬ СЕБЯ
     if (comment.userId.equals(req.userId)) {
       return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
 
-    // Проверяем, ставил ли уже лайк
     if (comment.likes.includes(req.userId)) {
       return res.status(400).json({ error: 'Вы уже лайкнули этот комментарий' });
     }
 
-    // Ставим лайк
     comment.likes.push(req.userId);
     await comment.save();
 
@@ -560,14 +600,9 @@ app.post('/api/reviews', [
     const existing = await Review.findOne({ userId: req.userId, filmId });
     if (existing) return res.status(400).json({ error: 'Вы уже написали рецензию на этот фильм' });
 
-    const review = new Review({ userId: req.userId, filmId, ratingId, title, text });
+    // Создаём рецензию со статусом pending (без начисления баллов)
+    const review = new Review({ userId: req.userId, filmId, ratingId, title, text, status: 'pending' });
     await review.save();
-
-    const points = req.isAdmin ? 50 : 30;
-    await addPoints(req.userId, req.userId, 'review', points, review._id);
-    await createEvent('review', req.user.nickname, film.title);
-
-    await updateAchievements(req.userId);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -586,7 +621,22 @@ app.get('/api/reviews/:filmId', [
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const reviews = await Review.find({ filmId: req.params.filmId, status: 'approved' })
+    let isAdmin = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.userId);
+        isAdmin = user?.isAdmin || false;
+      } catch (e) {}
+    }
+
+    const statusFilter = isAdmin ? {} : { status: 'approved' };
+
+    const reviews = await Review.find({
+      filmId: req.params.filmId,
+      ...statusFilter
+    })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
       .sort({ createdAt: -1 });
@@ -629,17 +679,14 @@ app.post('/api/reviews/:id/like', [
     const review = await Review.findById(req.params.id);
     if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
 
-    // ❌ ЗАПРЕТ ЛАЙКАТЬ СЕБЯ
     if (review.userId.equals(req.userId)) {
       return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
 
-    // Проверяем, ставил ли уже лайк
     if (review.likes.includes(req.userId)) {
       return res.status(400).json({ error: 'Вы уже лайкнули эту рецензию' });
     }
 
-    // Ставим лайк
     review.likes.push(req.userId);
     await review.save();
 
@@ -772,7 +819,8 @@ app.post('/api/ratings', [
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
-      await createEvent('rating', req.user.nickname, film.title, finalScore);
+      // Создаём событие с filmId и contentId (rating._id)
+      await createEvent('rating', req.user.nickname, film.title, film._id, finalScore, rating._id);
     }
 
     await updateAchievements(req.userId);
@@ -893,15 +941,15 @@ app.post('/api/films/import', [
   try {
     const { tmdbId } = req.body;
     const apiKey = process.env.TMDB_API_KEY;
-    
+
     const filmResponse = await fetch(
       `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`
     );
-    
+
     if (!filmResponse.ok) {
       throw new Error(`TMDB API error: ${filmResponse.status}`);
     }
-    
+
     const filmData = await filmResponse.json();
     if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
 
@@ -914,7 +962,7 @@ app.post('/api/films/import', [
       genres: filmData.genres?.map(g => g.name) || [],
       director: filmData.credits?.crew?.find(c => c.job === 'Director')?.name || 'Неизвестен',
       actors: filmData.credits?.cast?.slice(0, 5).map(a => a.name) || [],
-      trailer: filmData.videos?.results?.find(v => v.type === 'Trailer')?.key 
+      trailer: filmData.videos?.results?.find(v => v.type === 'Trailer')?.key
         ? `https://www.youtube.com/embed/${filmData.videos.results.find(v => v.type === 'Trailer').key}`
         : '',
       createdBy: req.userId
@@ -928,16 +976,27 @@ app.post('/api/films/import', [
       await film.save();
       isNew = true;
     } else {
+      // Фильм уже существует – обновляем и возвращаем alreadyExists
       await Film.findOneAndUpdate({ tmdbId: filmData.id }, filmDataForSave);
+      // Загружаем обновлённый фильм
+      const updatedFilm = await Film.findOne({ tmdbId: filmData.id });
+      return res.status(200).json({
+        film: updatedFilm,
+        alreadyExists: true,
+        message: 'Фильм уже есть в каталоге, данные обновлены'
+      });
     }
 
-    if (isNew) {
-      const points = req.isAdmin ? 5 : 2;
-      await addPoints(req.userId, req.userId, 'import', points, film._id);
-      await createEvent('film_add', req.user.nickname, film.title);
-    }
+    // Новый фильм – начисляем баллы и создаём событие
+    const points = req.isAdmin ? 5 : 2;
+    await addPoints(req.userId, req.userId, 'import', points, film._id);
+    await createEvent('film_add', req.user.nickname, film.title, film._id);
 
-    res.json(film);
+    res.status(201).json({
+      film,
+      alreadyExists: false,
+      message: 'Фильм успешно добавлен'
+    });
   } catch (error) {
     console.error('Ошибка импорта фильма:', error);
     res.status(500).json({ error: 'Ошибка импорта фильма' });
@@ -958,12 +1017,12 @@ app.get('/api/users/:id', [
     const userId = req.params.id;
     const user = await User.findById(userId).select('-password');
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    
+
     const ratings = await Rating.find({ userId }).populate('filmId', 'title poster year');
     const reviews = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
-    const isOwnProfile = req.headers.authorization?.split(' ')[1] ? 
+    const isOwnProfile = req.headers.authorization?.split(' ')[1] ?
       (() => {
         try {
           const decoded = jwt.verify(req.headers.authorization.split(' ')[1], process.env.JWT_SECRET);
@@ -1041,14 +1100,24 @@ app.get('/api/admin/pending/reviews', authenticate, isAdmin, async (req, res) =>
   }
 });
 
+// ----- ОДОБРЕНИЕ КОММЕНТАРИЯ (НАЧИСЛЯЕМ БАЛЛЫ, СОБЫТИЯ, ДОСТИЖЕНИЯ) -----
 app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const comment = await Comment.findByIdAndUpdate(
       req.params.id,
       { status: 'approved' },
       { new: true }
-    ).populate('userId', 'nickname');
+    ).populate('userId', 'nickname').populate('filmId', 'title');
+
     if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+
+    // Начисляем баллы автору комментария
+    const authorIsAdmin = comment.userId?.isAdmin || false;
+    const authorPoints = authorIsAdmin ? 10 : 2;
+    await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
+    await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
+    await updateAchievements(comment.userId._id);
+
     res.json(comment);
   } catch (error) {
     console.error('Ошибка одобрения комментария:', error);
@@ -1071,6 +1140,7 @@ app.put('/api/admin/comments/:id/reject', authenticate, isAdmin, async (req, res
   }
 });
 
+// ----- ОДОБРЕНИЕ РЕЦЕНЗИИ (НАЧИСЛЯЕМ БАЛЛЫ, СОБЫТИЯ, ДОСТИЖЕНИЯ) -----
 app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const review = await Review.findByIdAndUpdate(
@@ -1078,7 +1148,15 @@ app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res
       { status: 'approved' },
       { new: true }
     ).populate('userId', 'nickname').populate('filmId', 'title');
+
     if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+
+    const authorIsAdmin = review.userId?.isAdmin || false;
+    const authorPoints = authorIsAdmin ? 50 : 30;
+    await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
+    await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
+    await updateAchievements(review.userId._id);
+
     res.json(review);
   } catch (error) {
     console.error('Ошибка одобрения рецензии:', error);
