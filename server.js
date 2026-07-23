@@ -7,13 +7,38 @@ const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
 
 const app = express();
+
+// ===== ДИАГНОСТИКА ПЕРЕМЕННЫХ =====
+console.log('🔍 CLIENT_URL =', process.env.CLIENT_URL || '❌ НЕ УСТАНОВЛЕНА');
+console.log('🔍 TMDB_API_KEY =', process.env.TMDB_API_KEY ? '✅ Есть (первые 10 символов: ' + process.env.TMDB_API_KEY.slice(0, 10) + '...)' : '❌ НЕТ');
+
+// ===== НАСТРОЙКА CORS (ИСПРАВЛЕНА) =====
+const allowedOrigins = [
+  process.env.CLIENT_URL,
+  'https://cinephilium-frontendnew.vercel.app',
+  'http://localhost:3000'
+].filter(Boolean);
+
+console.log('✅ Разрешённые CORS-источники:', allowedOrigins);
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: function (origin, callback) {
+    // Разрешаем запросы без origin (например, от curl или мобильных приложений)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('❌ CORS заблокировал запрос с origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
+
 app.use(express.json());
 
-// ===== ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ =====
+// ===== ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ =====
 const requiredEnv = ['MONGODB_URI', 'JWT_SECRET', 'TMDB_API_KEY', 'ADMIN_SECRET_KEY'];
 const missingEnv = requiredEnv.filter(key => !process.env[key]);
 
@@ -408,7 +433,6 @@ app.post('/api/comments', [
     const points = req.isAdmin ? 10 : 2;
     await addPoints(req.userId, req.userId, 'comment', points, comment._id);
 
-    // Создаем событие
     await createEvent('comment', req.user.nickname, film.title);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
@@ -507,7 +531,6 @@ app.post('/api/reviews', [
     const points = req.isAdmin ? 50 : 30;
     await addPoints(req.userId, req.userId, 'review', points, review._id);
 
-    // Создаем событие
     await createEvent('review', req.user.nickname, film.title);
 
     const reviewWithUser = await Review.findById(review._id)
@@ -705,8 +728,6 @@ app.post('/api/ratings', [
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
-      
-      // Создаем событие
       await createEvent('rating', req.user.nickname, film.title, finalScore);
     }
 
@@ -867,8 +888,6 @@ app.post('/api/films/import', [
     if (isNew) {
       const points = req.isAdmin ? 5 : 2;
       await addPoints(req.userId, req.userId, 'import', points, film._id);
-      
-      // Создаем событие
       await createEvent('film_add', req.user.nickname, film.title);
     }
 
@@ -951,7 +970,6 @@ app.get('/api/users/:id', [
 // МОДЕРАЦИЯ (АДМИН-ПАНЕЛЬ)
 // ============================================================
 
-// ----- Получить комментарии на модерации -----
 app.get('/api/admin/pending/comments', authenticate, isAdmin, async (req, res) => {
   try {
     const comments = await Comment.find({ status: 'pending' })
@@ -964,7 +982,6 @@ app.get('/api/admin/pending/comments', authenticate, isAdmin, async (req, res) =
   }
 });
 
-// ----- Получить рецензии на модерации -----
 app.get('/api/admin/pending/reviews', authenticate, isAdmin, async (req, res) => {
   try {
     const reviews = await Review.find({ status: 'pending' })
@@ -977,7 +994,6 @@ app.get('/api/admin/pending/reviews', authenticate, isAdmin, async (req, res) =>
   }
 });
 
-// ----- Одобрить комментарий -----
 app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const comment = await Comment.findByIdAndUpdate(
@@ -993,7 +1009,6 @@ app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, re
   }
 });
 
-// ----- Отклонить комментарий -----
 app.put('/api/admin/comments/:id/reject', authenticate, isAdmin, async (req, res) => {
   try {
     const comment = await Comment.findByIdAndUpdate(
@@ -1009,7 +1024,6 @@ app.put('/api/admin/comments/:id/reject', authenticate, isAdmin, async (req, res
   }
 });
 
-// ----- Одобрить рецензию -----
 app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const review = await Review.findByIdAndUpdate(
@@ -1025,7 +1039,6 @@ app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res
   }
 });
 
-// ----- Отклонить рецензию -----
 app.put('/api/admin/reviews/:id/reject', authenticate, isAdmin, async (req, res) => {
   try {
     const review = await Review.findByIdAndUpdate(
@@ -1045,7 +1058,6 @@ app.put('/api/admin/reviews/:id/reject', authenticate, isAdmin, async (req, res)
 // СОБЫТИЯ (Лента активности)
 // ============================================================
 
-// ----- Получить все события -----
 app.get('/api/events', async (req, res) => {
   try {
     const events = await Event.find()
