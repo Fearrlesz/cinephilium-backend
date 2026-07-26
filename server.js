@@ -181,18 +181,29 @@ const Event = mongoose.model('Event', eventSchema);
 // ============================================================
 
 function calculateRating(base1, base2, base3, base4, subjectiveM) {
-  const avg1 = base1.reduce((a, b) => a + b, 0) / 5;
-  const avg2 = base2.reduce((a, b) => a + b, 0) / 5;
-  const avg3 = base3.reduce((a, b) => a + b, 0) / 5;
-  const avg4 = base4.reduce((a, b) => a + b, 0) / 5;
-  const T = (avg1 + avg2 + avg3 + avg4) * 1.4;
-  const finalRaw = T + 34 * (subjectiveM - 1) / 9;
+  // 1. Округление каждой базы
+  const round1 = Math.round(base1.reduce((a, b) => a + b, 0) / 5);
+  const round2 = Math.round(base2.reduce((a, b) => a + b, 0) / 5);
+  const round3 = Math.round(base3.reduce((a, b) => a + b, 0) / 5);
+  const round4 = Math.round(base4.reduce((a, b) => a + b, 0) / 5);
+  
+  // 2. Сумма округлённых баз
+  const sum = round1 + round2 + round3 + round4;
+  
+  // 3. T = Сумма × 1.4
+  const T = sum * 1.4;
+  
+  // 4. Вайб-множитель (от 1 до 1.6072)
+  const vibeMultiplier = 1 + (subjectiveM - 1) * 0.06747;
+  
+  // 5. Итог
+  const finalRaw = T * vibeMultiplier;
+  
   return {
     technicalScore: Math.round(T),
     finalScore: Math.round(finalRaw)
   };
 }
-
 async function addPoints(userId, actorId, type, points, refId = null) {
   const user = await User.findById(userId);
   if (!user) return false;
