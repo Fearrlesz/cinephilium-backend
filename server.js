@@ -1283,6 +1283,32 @@ app.get('/api/events', async (req, res) => {
   }
 });
 
+app.post('/api/events', authenticate, async (req, res) => {
+  try {
+    const { type, user, film, filmId, score, metadata } = req.body;
+
+    if (!type || !user || !film) {
+      return res.status(400).json({ error: 'Не хватает обязательных полей' });
+    }
+
+    const newEvent = new Event({
+      type,
+      user,
+      film,
+      filmId: filmId || null,
+      score: score || null,
+      metadata: metadata || {},
+      createdAt: new Date()
+    });
+
+    await newEvent.save();
+    res.status(201).json(newEvent);
+  } catch (error) {
+    console.error('❌ Ошибка создания события:', error);
+    res.status(500).json({ error: 'Ошибка создания события' });
+  }
+});
+
 // ============================================================
 // ЗАПУСК СЕРВЕРА
 // ============================================================
