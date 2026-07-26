@@ -152,7 +152,7 @@ const eventSchema = new mongoose.Schema({
   },
   user: { type: String, required: true },
   film: { type: String, default: '' },
-  filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film' },
+  filmId: { type: String, default: null },
   score: { type: Number, default: null },
   contentId: { type: mongoose.Schema.Types.ObjectId },
   metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
