@@ -181,22 +181,22 @@ const Event = mongoose.model('Event', eventSchema);
 // ============================================================
 
 function calculateRating(base1, base2, base3, base4, subjectiveM) {
-  // 1. Округление каждой базы
-  const round1 = Math.round(base1.reduce((a, b) => a + b, 0) / 5);
-  const round2 = Math.round(base2.reduce((a, b) => a + b, 0) / 5);
-  const round3 = Math.round(base3.reduce((a, b) => a + b, 0) / 5);
-  const round4 = Math.round(base4.reduce((a, b) => a + b, 0) / 5);
+  // 1. Без округления — просто средние
+  const avg1 = base1.reduce((a, b) => a + b, 0) / 5;
+  const avg2 = base2.reduce((a, b) => a + b, 0) / 5;
+  const avg3 = base3.reduce((a, b) => a + b, 0) / 5;
+  const avg4 = base4.reduce((a, b) => a + b, 0) / 5;
   
-  // 2. Сумма округлённых баз
-  const sum = round1 + round2 + round3 + round4;
+  // 2. Сумма баз
+  const sum = avg1 + avg2 + avg3 + avg4;
   
   // 3. T = Сумма × 1.4
   const T = sum * 1.4;
   
-  // 4. Вайб-множитель (от 1 до 1.6072)
+  // 4. Вайб-множитель
   const vibeMultiplier = 1 + (subjectiveM - 1) * 0.06747;
   
-  // 5. Итог
+  // 5. Итог (округляется только в конце!)
   const finalRaw = T * vibeMultiplier;
   
   return {
