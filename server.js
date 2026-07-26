@@ -1068,13 +1068,18 @@ app.get('/api/users/:id', [
     const reviews = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
-    const isOwnProfile = req.headers.authorization?.split(' ')[1] ?
-      (() => {
-        try {
-          const decoded = jwt.verify(req.headers.authorization.split(' ')[1], process.env.JWT_SECRET);
-          return decoded.userId === userId;
-        } catch { return false; }
-      })() : false;
+    // ✅ ИСПРАВЛЕНО: безопасная проверка токена
+    let isOwnProfile = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        isOwnProfile = decoded.userId === userId;
+      } catch (e) {
+        // Токен невалиден – просто игнорируем
+        console.log('⚠️ Невалидный токен при запросе профиля:', e.message);
+      }
+    }
 
     res.json({
       user: {
@@ -1285,7 +1290,10 @@ app.get('/api/events', async (req, res) => {
 
 app.post('/api/events', authenticate, async (req, res) => {
   try {
-    const { type, user, film, filmId, score, metadata } = req.body;
+    const { type, film, filmId, score, metadata } = req.body;
+    
+    // ✅ ИСПРАВЛЕНО: используем только данные из токена
+    const user = req.user.nickname;
 
     if (!type || !user || !film) {
       return res.status(400).json({ error: 'Не хватает обязательных полей' });
@@ -1293,7 +1301,7 @@ app.post('/api/events', authenticate, async (req, res) => {
 
     const newEvent = new Event({
       type,
-      user,
+      user,  // ✅ БЕРЁМ ИЗ req.user, А НЕ ИЗ ТЕЛА ЗАПРОСА
       film,
       filmId: filmId || null,
       score: score || null,
