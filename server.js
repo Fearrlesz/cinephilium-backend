@@ -1318,6 +1318,60 @@ app.post('/api/events', authenticate, async (req, res) => {
 });
 
 // ============================================================
+// НОВЫЕ РОУТЫ ДЛЯ РЕЦЕНЗИЙ И ПОЛЬЗОВАТЕЛЕЙ
+// ============================================================
+
+// ----- РЕЦЕНЗИИ ПОЛЬЗОВАТЕЛЯ -----
+app.get('/api/reviews/user', authenticate, async (req, res) => {
+  try {
+    const reviews = await Review.find({ userId: req.userId })
+      .populate('filmId', 'title year poster')
+      .populate('ratingId', 'finalScore')
+      .sort({ createdAt: -1 });
+    res.json(reviews);
+  } catch (error) {
+    console.error('Ошибка получения рецензий пользователя:', error);
+    res.status(500).json({ error: 'Не удалось загрузить рецензии' });
+  }
+});
+
+// ----- ДОСТИЖЕНИЯ ТЕКУЩЕГО ПОЛЬЗОВАТЕЛЯ -----
+app.get('/api/users/me/achievements', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const ratingsCount = await Rating.countDocuments({ userId: req.userId });
+    const reviewsCount = await Review.countDocuments({ userId: req.userId, status: 'approved' });
+    const commentsCount = await Comment.countDocuments({ userId: req.userId, status: 'approved' });
+
+    const allPossible = await getUserAchievements(
+      req.userId,
+      mongoose.connection.db,
+      ratingsCount,
+      reviewsCount,
+      commentsCount
+    );
+
+    res.json({
+      achievements: user.achievements || [],
+      possible: allPossible,
+      totalPoints: user.totalPoints || 0,
+      progress: {
+        ratings: ratingsCount,
+        reviews: reviewsCount,
+        comments: commentsCount
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка получения достижений:', error);
+    res.status(500).json({ error: 'Не удалось загрузить достижения' });
+  }
+});
+
+// ============================================================
 // ЗАПУСК СЕРВЕРА
 // ============================================================
 
