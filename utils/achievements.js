@@ -47,6 +47,7 @@ async function getSpecialAchievements(userId, db) {
   const ratingsCollection = db.collection('ratings');
   const commentsCollection = db.collection('comments');
   const filmsCollection = db.collection('films');
+  const usersCollection = db.collection('users');
 
   // --- Высокие оценки (80+) ---
   const highRatings = await ratingsCollection
@@ -70,6 +71,20 @@ async function getSpecialAchievements(userId, db) {
   // --- Добавленные фильмы ---
   const importedFilms = await filmsCollection.countDocuments({ createdBy: userId });
   if (importedFilms >= 1) earned.push('🎪 Меценат');
+
+  // --- ПЕРВЫЙ КАДР: первые 100 зарегистрированных пользователей ---
+  const totalUsers = await usersCollection.countDocuments();
+  
+  if (totalUsers <= 100) {
+    // Проверяем, есть ли у пользователя хоть какое-то действие
+    const hasActivity = await ratingsCollection.findOne({ userId }) ||
+                        await db.collection('reviews').findOne({ userId }) ||
+                        await commentsCollection.findOne({ userId });
+    
+    if (hasActivity) {
+      earned.push('🎬 Первый кадр');
+    }
+  }
 
   return earned;
 }
@@ -99,8 +114,8 @@ async function getUserAchievements(userId, db, ratingsCount, reviewsCount, comme
 // ЭКСПОРТ (для обратной совместимости)
 // ============================================================
 module.exports = {
-  ACHIEVEMENTS,                // ваши константы
-  getBasicAchievements,        // если нужно отдельно
-  getSpecialAchievements,      // если нужно отдельно
-  getUserAchievements,         // ОСНОВНАЯ функция для бэкенда
+  ACHIEVEMENTS,
+  getBasicAchievements,
+  getSpecialAchievements,
+  getUserAchievements,
 };
