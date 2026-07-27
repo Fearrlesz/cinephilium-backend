@@ -507,6 +507,49 @@ app.get('/api/films/search-by-title', async (req, res) => {
   }
 });
 
+// ===== ПОЛУЧИТЬ ПОЛЬЗОВАТЕЛЕЙ, ОЦЕНИВШИХ ФИЛЬМ =====
+app.get('/api/films/:id/users', [
+  ...validateObjectId('id')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    const filmId = req.params.id;
+    
+    const film = await Film.findById(filmId);
+    if (!film) {
+      return res.status(404).json({ error: 'Фильм не найден' });
+    }
+
+    const ratings = await Rating.find({ filmId })
+      .populate('userId', 'nickname isAdmin')
+      .sort({ createdAt: -1 });
+
+    const users = ratings.map(rating => ({
+      user: rating.userId,
+      rating: {
+        _id: rating._id,
+        finalScore: rating.finalScore,
+        base1: rating.base1,
+        base2: rating.base2,
+        base3: rating.base3,
+        base4: rating.base4,
+        subjectiveM: rating.subjectiveM,
+        technicalScore: rating.technicalScore,
+        textReview: rating.textReview,
+        createdAt: rating.createdAt
+      }
+    }));
+
+    res.json(users);
+  } catch (error) {
+    console.error('Ошибка загрузки пользователей фильма:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+
 // ============================================================
 // КОММЕНТАРИИ
 // ============================================================
