@@ -19,6 +19,7 @@ console.log('🔍 TMDB_API_KEY =', process.env.TMDB_API_KEY ? '✅ Есть (п�
 const allowedOrigins = [
   process.env.CLIENT_URL,
   'https://cinephilium-frontendnew.vercel.app',
+  'https://cinephilium-frontend-43vstti9a-nikita-borodin.vercel.app',
   'http://localhost:3000'
 ].filter(Boolean);
 
@@ -34,7 +35,9 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.use(express.json());
