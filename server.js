@@ -75,7 +75,16 @@ const userSchema = new mongoose.Schema({
   avatar: { type: String, default: '' },
   isAdmin: { type: Boolean, default: false },
   totalPoints: { type: Number, default: 0 },
-  achievements: { type: [String], default: [] },
+  achievements: {
+  all: [{
+    id: { type: String, required: true },
+    title: { type: String, required: true },
+    icon: { type: String, default: '🏅' },
+    description: { type: String, default: '' },
+    earnedAt: { type: Date, default: Date.now }
+  }],
+  active: { type: String, default: null }
+},
   registeredAt: { type: Date, default: Date.now }
 });
 
@@ -1414,6 +1423,67 @@ app.get('/api/users/me/achievements', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
     res.status(500).json({ error: 'Не удалось загрузить достижения' });
+  }
+});
+
+// ============================================================
+// ДОСТИЖЕНИЯ
+// ============================================================
+
+// 1. ДОБАВИТЬ ДОСТИЖЕНИЕ
+app.post('/api/achievements/add', authenticate, async (req, res) => {
+  try {
+    const { id, title, icon, description } = req.body;
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    // Проверяем, есть ли уже такое достижение
+    const exists = user.achievements.all.some(a => a.id === id);
+    if (exists) return res.json({ message: 'Уже есть' });
+
+    user.achievements.all.push({ id, title, icon: icon || '🏅', description: description || '', earnedAt: new Date() });
+
+    // Если активного нет — делаем это активным
+    if (!user.achievements.active) {
+      user.achievements.active = id;
+    }
+
+    await user.save();
+    res.json({ success: true, achievements: user.achievements });
+  } catch (error) {
+    console.error('Ошибка добавления достижения:', error);
+    res.status(500).json({ error: 'Ошибка добавления достижения' });
+  }
+});
+
+// 2. ВЫБРАТЬ АКТИВНОЕ ДОСТИЖЕНИЕ
+app.post('/api/achievements/activate', authenticate, async (req, res) => {
+  try {
+    const { id } = req.body;
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+
+    const exists = user.achievements.all.some(a => a.id === id);
+    if (!exists) return res.status(404).json({ error: 'Достижение не найдено' });
+
+    user.achievements.active = id;
+    await user.save();
+    res.json({ success: true, active: user.achievements.active });
+  } catch (error) {
+    console.error('Ошибка активации достижения:', error);
+    res.status(500).json({ error: 'Ошибка активации достижения' });
+  }
+});
+
+// 3. ПОЛУЧИТЬ ВСЕ ДОСТИЖЕНИЯ
+app.get('/api/achievements', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    res.json(user.achievements);
+  } catch (error) {
+    console.error('Ошибка получения достижений:', error);
+    res.status(500).json({ error: 'Ошибка получения достижений' });
   }
 });
 
