@@ -4,42 +4,130 @@
 // ДОСТИЖЕНИЯ (ГЕЙМИФИКАЦИЯ)
 // ============================================================
 
-// Список базовых достижений (по количеству действий)
-const ACHIEVEMENTS = {
-  FIRST_RATING: '🎬 Первый шаг',
-  RATING_10: '⭐ Кинолюбитель',
-  RATING_25: '🎯 Ценитель кино',
-  RATING_50: '🔥 Энтузиаст',
-  RATING_100: '👑 Кинолегенда',
-  FIRST_REVIEW: '📝 Критик',
-  REVIEW_5: '✍️ Мастер слова',
-  FIRST_COMMENT: '💬 Первое слово',
-  COMMENT_10: '🗣️ Активный зритель',
+// ============================================================
+// 1. СПРАВОЧНИК ВСЕХ ДОСТИЖЕНИЙ (с иконками и описаниями)
+// ============================================================
+
+const ACHIEVEMENTS_META = {
+  '🎬 Первый шаг': {
+    id: 'first_rating',
+    title: '🎬 Первый шаг',
+    icon: '🎬',
+    description: 'Поставить первую оценку'
+  },
+  '⭐ Кинолюбитель': {
+    id: 'rating_10',
+    title: '⭐ Кинолюбитель',
+    icon: '⭐',
+    description: 'Поставить 10 оценок'
+  },
+  '🎯 Ценитель кино': {
+    id: 'rating_25',
+    title: '🎯 Ценитель кино',
+    icon: '🎯',
+    description: 'Поставить 25 оценок'
+  },
+  '🔥 Энтузиаст': {
+    id: 'rating_50',
+    title: '🔥 Энтузиаст',
+    icon: '🔥',
+    description: 'Поставить 50 оценок'
+  },
+  '👑 Кинолегенда': {
+    id: 'rating_100',
+    title: '👑 Кинолегенда',
+    icon: '👑',
+    description: 'Поставить 100 оценок'
+  },
+  '📝 Критик': {
+    id: 'first_review',
+    title: '📝 Критик',
+    icon: '📝',
+    description: 'Написать первую рецензию'
+  },
+  '✍️ Мастер слова': {
+    id: 'review_5',
+    title: '✍️ Мастер слова',
+    icon: '✍️',
+    description: 'Написать 5 рецензий'
+  },
+  '💬 Первое слово': {
+    id: 'first_comment',
+    title: '💬 Первое слово',
+    icon: '💬',
+    description: 'Написать первый комментарий'
+  },
+  '🗣️ Активный зритель': {
+    id: 'comment_10',
+    title: '🗣️ Активный зритель',
+    icon: '🗣️',
+    description: 'Написать 10 комментариев'
+  },
+  '🎯 Меткий стрелок': {
+    id: 'sharp_shooter',
+    title: '🎯 Меткий стрелок',
+    icon: '🎯',
+    description: 'Поставить оценку 80+'
+  },
+  '⭐ Ценитель шедевров': {
+    id: 'masterpiece_lover',
+    title: '⭐ Ценитель шедевров',
+    icon: '⭐',
+    description: 'Поставить 5 оценок 80+'
+  },
+  '👑 Гурман': {
+    id: 'gourmet',
+    title: '👑 Гурман',
+    icon: '👑',
+    description: 'Поставить оценку 90'
+  },
+  '🤝 Дружелюбный': {
+    id: 'friendly',
+    title: '🤝 Дружелюбный',
+    icon: '🤝',
+    description: 'Получить 5 лайков на комментариях'
+  },
+  '🎪 Меценат': {
+    id: 'patron',
+    title: '🎪 Меценат',
+    icon: '🎪',
+    description: 'Добавить фильм в каталог'
+  },
+  '🎬 Первый кадр': {
+    id: 'first_frame',
+    title: '🎬 Первый кадр',
+    icon: '🎬',
+    description: 'Быть среди первых 100 пользователей'
+  }
 };
 
 // ============================================================
-// 1. БАЗОВЫЕ ДОСТИЖЕНИЯ (по счётчикам)
+// 2. БАЗОВЫЕ ДОСТИЖЕНИЯ (по счётчикам) - возвращаем ОБЪЕКТЫ
 // ============================================================
 function getBasicAchievements(ratingsCount, reviewsCount, commentsCount) {
   const earned = [];
   
-  if (ratingsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_RATING);
-  if (ratingsCount >= 10) earned.push(ACHIEVEMENTS.RATING_10);
-  if (ratingsCount >= 25) earned.push(ACHIEVEMENTS.RATING_25);
-  if (ratingsCount >= 50) earned.push(ACHIEVEMENTS.RATING_50);
-  if (ratingsCount >= 100) earned.push(ACHIEVEMENTS.RATING_100);
+  if (ratingsCount >= 1) earned.push('🎬 Первый шаг');
+  if (ratingsCount >= 10) earned.push('⭐ Кинолюбитель');
+  if (ratingsCount >= 25) earned.push('🎯 Ценитель кино');
+  if (ratingsCount >= 50) earned.push('🔥 Энтузиаст');
+  if (ratingsCount >= 100) earned.push('👑 Кинолегенда');
   
-  if (reviewsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_REVIEW);
-  if (reviewsCount >= 5) earned.push(ACHIEVEMENTS.REVIEW_5);
+  if (reviewsCount >= 1) earned.push('📝 Критик');
+  if (reviewsCount >= 5) earned.push('✍️ Мастер слова');
   
-  if (commentsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_COMMENT);
-  if (commentsCount >= 10) earned.push(ACHIEVEMENTS.COMMENT_10);
+  if (commentsCount >= 1) earned.push('💬 Первое слово');
+  if (commentsCount >= 10) earned.push('🗣️ Активный зритель');
   
-  return earned;
+  // Преобразуем названия в объекты через справочник
+  return earned.map(name => {
+    const meta = ACHIEVEMENTS_META[name];
+    return meta ? { ...meta, earnedAt: new Date() } : { id: name, title: name, icon: '🏅', description: '', earnedAt: new Date() };
+  });
 }
 
 // ============================================================
-// 2. СПЕЦИАЛЬНЫЕ ДОСТИЖЕНИЯ (требуют запросов к БД)
+// 3. СПЕЦИАЛЬНЫЕ ДОСТИЖЕНИЯ - возвращаем ОБЪЕКТЫ
 // ============================================================
 async function getSpecialAchievements(userId, db) {
   const earned = [];
@@ -62,7 +150,7 @@ async function getSpecialAchievements(userId, db) {
     .toArray();
   if (masterpieces.length >= 1) earned.push('👑 Гурман');
 
-  // --- Лайки на комментариях (полученные автором) ---
+  // --- Лайки на комментариях ---
   const likedComments = await commentsCollection
     .find({ userId, likes: { $exists: true, $ne: [] } })
     .toArray();
@@ -72,49 +160,45 @@ async function getSpecialAchievements(userId, db) {
   const importedFilms = await filmsCollection.countDocuments({ createdBy: userId });
   if (importedFilms >= 1) earned.push('🎪 Меценат');
 
-  // --- ПЕРВЫЙ КАДР: первые 100 зарегистрированных пользователей ---
+  // --- Первый кадр ---
   const totalUsers = await usersCollection.countDocuments();
-  
   if (totalUsers <= 100) {
-    // Проверяем, есть ли у пользователя хоть какое-то действие
     const hasActivity = await ratingsCollection.findOne({ userId }) ||
                         await db.collection('reviews').findOne({ userId }) ||
                         await commentsCollection.findOne({ userId });
-    
     if (hasActivity) {
       earned.push('🎬 Первый кадр');
     }
   }
 
-  return earned;
+  // Преобразуем названия в объекты через справочник
+  return earned.map(name => {
+    const meta = ACHIEVEMENTS_META[name];
+    return meta ? { ...meta, earnedAt: new Date() } : { id: name, title: name, icon: '🏅', description: '', earnedAt: new Date() };
+  });
 }
 
 // ============================================================
-// 3. ГЛАВНАЯ ФУНКЦИЯ (используется в бэкенде)
+// 4. ГЛАВНАЯ ФУНКЦИЯ - возвращает ОБЪЕКТЫ
 // ============================================================
-/**
- * Возвращает ВСЕ достижения пользователя (базовые + специальные)
- * @param {string} userId - ObjectId пользователя
- * @param {import('mongodb').Db} db - экземпляр базы данных
- * @param {number} ratingsCount - количество оценок (можно передать готовое, чтобы избежать лишнего запроса)
- * @param {number} reviewsCount - количество одобренных рецензий
- * @param {number} commentsCount - количество одобренных комментариев
- * @returns {Promise<string[]>} массив названий достижений
- */
 async function getUserAchievements(userId, db, ratingsCount, reviewsCount, commentsCount) {
-  // Базовые
   const basic = getBasicAchievements(ratingsCount, reviewsCount, commentsCount);
-  // Специальные
   const special = await getSpecialAchievements(userId, db);
-  // Объединяем и убираем дубли
-  return [...new Set([...basic, ...special])];
+  
+  // Объединяем и убираем дубли по id
+  const all = [...basic, ...special];
+  const unique = all.filter((obj, index, self) => 
+    index === self.findIndex(o => o.id === obj.id)
+  );
+  
+  return unique;
 }
 
 // ============================================================
-// ЭКСПОРТ (для обратной совместимости)
+// 5. ЭКСПОРТ
 // ============================================================
 module.exports = {
-  ACHIEVEMENTS,
+  ACHIEVEMENTS_META,
   getBasicAchievements,
   getSpecialAchievements,
   getUserAchievements,
