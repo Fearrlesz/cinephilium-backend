@@ -1449,7 +1449,8 @@ app.post('/api/achievements/add', authenticate, async (req, res) => {
     }
 
     await user.save();
-    res.json({ success: true, achievements: user.achievements });
+    // ✅ Возвращаем массив достижений, чтобы фронтенд обновил список
+    res.json({ success: true, achievements: user.achievements.all });
   } catch (error) {
     console.error('Ошибка добавления достижения:', error);
     res.status(500).json({ error: 'Ошибка добавления достижения' });
@@ -1468,6 +1469,7 @@ app.post('/api/achievements/activate', authenticate, async (req, res) => {
 
     user.achievements.active = id;
     await user.save();
+    // ✅ Возвращаем активное достижение (или можно вернуть весь объект)
     res.json({ success: true, active: user.achievements.active });
   } catch (error) {
     console.error('Ошибка активации достижения:', error);
@@ -1475,12 +1477,13 @@ app.post('/api/achievements/activate', authenticate, async (req, res) => {
   }
 });
 
-// 3. ПОЛУЧИТЬ ВСЕ ДОСТИЖЕНИЯ
+// 3. ПОЛУЧИТЬ ВСЕ ДОСТИЖЕНИЯ (массив)
 app.get('/api/achievements', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    res.json(user.achievements);
+    // ✅ Возвращаем массив достижений (не весь объект)
+    res.json(user.achievements.all || []);
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
     res.status(500).json({ error: 'Ошибка получения достижений' });
