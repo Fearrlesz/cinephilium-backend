@@ -1144,7 +1144,7 @@ app.get('/api/users/:id', [
         registeredAt: user.registeredAt,
         isAdmin: user.isAdmin,
         totalPoints: user.totalPoints,
-        achievements: user.achievements || [],
+        achievements: user.achievements?.all || [],
         email: isOwnProfile ? user.email : undefined
       },
       ratings: ratings.map(r => ({
@@ -1203,7 +1203,7 @@ app.get('/api/users/:id/achievements', [
 
     res.json({
       nickname: user.nickname,
-      earned: user.achievements || [],
+      earned: user.achievements?.all || [],
       possible: allPossible,
       progress: {
         ratings: ratingsCount,
@@ -1411,15 +1411,16 @@ app.get('/api/users/me/achievements', authenticate, async (req, res) => {
     );
 
     res.json({
-      achievements: user.achievements || [],
-      possible: allPossible,
-      totalPoints: user.totalPoints || 0,
-      progress: {
-        ratings: ratingsCount,
-        reviews: reviewsCount,
-        comments: commentsCount
-      }
-    });
+  achievements: user.achievements?.all || [],
+  active: user.achievements?.active || null,
+  possible: allPossible,
+  totalPoints: user.totalPoints || 0,
+  progress: {
+    ratings: ratingsCount,
+    reviews: reviewsCount,
+    comments: commentsCount
+  }
+});
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
     res.status(500).json({ error: 'Не удалось загрузить достижения' });
