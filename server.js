@@ -1422,17 +1422,18 @@ app.get('/api/users/me/achievements', authenticate, async (req, res) => {
       commentsCount
     );
 
+    // ✅ ВСЁ ПРАВИЛЬНО, НИЧЕГО НЕ МЕНЯЕМ
     res.json({
-  achievements: user.achievements?.all || [],
-  active: user.achievements?.active || null,
-  possible: allPossible,
-  totalPoints: user.totalPoints || 0,
-  progress: {
-    ratings: ratingsCount,
-    reviews: reviewsCount,
-    comments: commentsCount
-  }
-});
+      achievements: user.achievements?.all || [],
+      active: user.achievements?.active || null,
+      possible: allPossible,
+      totalPoints: user.totalPoints || 0,
+      progress: {
+        ratings: ratingsCount,
+        reviews: reviewsCount,
+        comments: commentsCount
+      }
+    });
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
     res.status(500).json({ error: 'Не удалось загрузить достижения' });
@@ -1443,8 +1444,8 @@ app.get('/api/users/me/achievements', authenticate, async (req, res) => {
 // ДОСТИЖЕНИЯ
 // ============================================================
 
-// 1. ДОБАВИТЬ ДОСТИЖЕНИЕ
-app.post('/api/achievements/add', authenticate, async (req, res) => {
+// 1. ДОБАВИТЬ ДОСТИЖЕНИЕ (ТОЛЬКО ДЛЯ АДМИНОВ)
+app.post('/api/achievements/add', authenticate, isAdmin, async (req, res) => {  // ✅ ДОБАВЛЕН isAdmin
   try {
     const { id, title, icon, description } = req.body;
     const user = await User.findById(req.userId);
@@ -1454,16 +1455,28 @@ app.post('/api/achievements/add', authenticate, async (req, res) => {
     const exists = user.achievements.all.some(a => a.id === id);
     if (exists) return res.json({ message: 'Уже есть' });
 
-    user.achievements.all.push({ id, title, icon: icon || '🏅', description: description || '', earnedAt: new Date() });
+    // ✅ ПРАВИЛЬНО: используем $push для добавления в массив all
+    await User.findByIdAndUpdate(req.userId, {
+      $push: { 
+        'achievements.all': { 
+          id, 
+          title, 
+          icon: icon || '🏅', 
+          description: description || '', 
+          earnedAt: new Date() 
+        } 
+      }
+    });
 
     // Если активного нет — делаем это активным
     if (!user.achievements.active) {
-      user.achievements.active = id;
+      await User.findByIdAndUpdate(req.userId, {
+        $set: { 'achievements.active': id }
+      });
     }
 
-    await user.save();
-    // ✅ Возвращаем массив достижений, чтобы фронтенд обновил список
-    res.json({ success: true, achievements: user.achievements.all });
+    const updatedUser = await User.findById(req.userId);
+    res.json({ success: true, achievements: updatedUser.achievements.all });
   } catch (error) {
     console.error('Ошибка добавления достижения:', error);
     res.status(500).json({ error: 'Ошибка добавления достижения' });
@@ -1480,10 +1493,12 @@ app.post('/api/achievements/activate', authenticate, async (req, res) => {
     const exists = user.achievements.all.some(a => a.id === id);
     if (!exists) return res.status(404).json({ error: 'Достижение не найдено' });
 
-    user.achievements.active = id;
-    await user.save();
-    // ✅ Возвращаем активное достижение (или можно вернуть весь объект)
-    res.json({ success: true, active: user.achievements.active });
+    // ✅ ПРАВИЛЬНО: обновляем только поле active
+    await User.findByIdAndUpdate(req.userId, {
+      $set: { 'achievements.active': id }
+    });
+
+    res.json({ success: true, active: id });
   } catch (error) {
     console.error('Ошибка активации достижения:', error);
     res.status(500).json({ error: 'Ошибка активации достижения' });
@@ -1495,8 +1510,9 @@ app.get('/api/achievements', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    // ✅ Возвращаем массив достижений (не весь объект)
-    res.json(user.achievements.all || []);
+    
+    // ✅ ПРАВИЛЬНО: безопасный доступ через optional chaining
+    res.json(user.achievements?.all || []);
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
     res.status(500).json({ error: 'Ошибка получения достижений' });
