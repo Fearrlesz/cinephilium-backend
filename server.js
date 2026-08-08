@@ -276,16 +276,28 @@ async function updateAchievements(userId) {
     const user = await User.findById(userId);
     if (!user) return;
 
-    const currentAchievements = user.achievements || [];
-    // Находим новые достижения (которых ещё нет у пользователя)
-    const newAchievements = allPossible.filter(a => !currentAchievements.includes(a));
+    // ✅ ПРАВИЛЬНО: берем только массив all из объекта achievements
+    const currentAchievements = user.achievements?.all || [];
+    
+    // ✅ ПРАВИЛЬНО: сравниваем по id, а не по ссылкам на объекты
+    const newAchievements = allPossible.filter(newAch => 
+      !currentAchievements.some(existingAch => existingAch.id === newAch.id)
+    );
 
     if (newAchievements.length > 0) {
-      // Добавляем новые достижения
-      const updatedAchievements = [...currentAchievements, ...newAchievements];
-      await User.findByIdAndUpdate(userId, { achievements: updatedAchievements });
+      // ✅ ПРАВИЛЬНО: добавляем в массив all, а не перезаписываем весь объект
+      await User.findByIdAndUpdate(userId, {
+        $push: { 'achievements.all': { $each: newAchievements } }
+      });
 
-      console.log(`🎮 Пользователь ${user.nickname} получил новые достижения: ${newAchievements.join(', ')}`);
+      // ✅ ПРАВИЛЬНО: если активное достижение не выбрано - ставим первое новое
+      if (!user.achievements?.active) {
+        await User.findByIdAndUpdate(userId, {
+          $set: { 'achievements.active': newAchievements[0].id }
+        });
+      }
+
+      console.log(`🎮 Пользователь ${user.nickname} получил новые достижения: ${newAchievements.map(a => a.id).join(', ')}`);
 
       // Создаём событие о достижении
       await createEvent(
@@ -295,7 +307,7 @@ async function updateAchievements(userId) {
         null,
         null,
         null,
-        { achievements: newAchievements }
+        { achievements: newAchievements.map(a => a.id) }
       );
     }
   } catch (error) {
