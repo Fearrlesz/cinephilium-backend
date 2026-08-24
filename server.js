@@ -412,7 +412,7 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 });
 
 // ============================================================
-// ФИЛЬМЫ
+// ФИЛЬМЫ — ПРАВИЛЬНЫЙ ПОРЯДОК: сначала статические, потом динамические
 // ============================================================
 
 app.get('/api/films', async (req, res) => {
@@ -461,6 +461,31 @@ app.get('/api/films', async (req, res) => {
   }
 });
 
+// ----- СТАТИЧЕСКИЙ РОУТ (поиск по названию) — ДОЛЖЕН БЫТЬ ВЫШЕ /:id -----
+app.get('/api/films/search-by-title', async (req, res) => {
+  try {
+    const title = req.query.title;
+    if (!title) {
+      return res.status(400).json({ error: 'Название фильма не указано' });
+    }
+
+    let film = await Film.findOne({ title: title });
+    if (!film) {
+      film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
+    }
+
+    if (!film) {
+      return res.status(404).json({ error: 'Фильм не найден' });
+    }
+
+    res.json(film);
+  } catch (error) {
+    console.error('Ошибка поиска фильма по названию:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ----- ДИНАМИЧЕСКИЕ РОУТЫ -----
 app.get('/api/films/:id', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -504,31 +529,7 @@ app.get('/api/films/:id', [
   }
 });
 
-// ===== ПОИСК ФИЛЬМА ПО НАЗВАНИЮ =====
-app.get('/api/films/search-by-title', async (req, res) => {
-  try {
-    const title = req.query.title;
-    if (!title) {
-      return res.status(400).json({ error: 'Название фильма не указано' });
-    }
-
-    let film = await Film.findOne({ title: title });
-    if (!film) {
-      film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
-    }
-
-    if (!film) {
-      return res.status(404).json({ error: 'Фильм не найден' });
-    }
-
-    res.json(film);
-  } catch (error) {
-    console.error('Ошибка поиска фильма по названию:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-// ===== ПОЛУЧИТЬ ПОЛЬЗОВАТЕЛЕЙ, ОЦЕНИВШИХ ФИЛЬМ =====
+// ----- ЕЩЁ ОДИН ДИНАМИЧЕСКИЙ РОУТ (не конфликтует с /:id, но оставляем после) -----
 app.get('/api/films/:id/users', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -569,7 +570,6 @@ app.get('/api/films/:id/users', [
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
-
 
 // ============================================================
 // КОММЕНТАРИИ
@@ -688,7 +688,7 @@ app.post('/api/comments/:id/like', [
 });
 
 // ============================================================
-// РЕЦЕНЗИИ
+// РЕЦЕНЗИИ — ПРАВИЛЬНЫЙ ПОРЯДОК: сначала статические, потом динамические
 // ============================================================
 
 app.post('/api/reviews', [
@@ -725,6 +725,21 @@ app.post('/api/reviews', [
   }
 });
 
+// ----- СТАТИЧЕСКИЙ РОУТ (рецензии пользователя) — ДОЛЖЕН БЫТЬ ВЫШЕ /:filmId -----
+app.get('/api/reviews/user', authenticate, async (req, res) => {
+  try {
+    const reviews = await Review.find({ userId: req.userId })
+      .populate('filmId', 'title year poster')
+      .populate('ratingId', 'finalScore')
+      .sort({ createdAt: -1 });
+    res.json(reviews);
+  } catch (error) {
+    console.error('Ошибка получения рецензий пользователя:', error);
+    res.status(500).json({ error: 'Не удалось загрузить рецензии' });
+  }
+});
+
+// ----- ДИНАМИЧЕСКИЕ РОУТЫ -----
 app.get('/api/reviews/:filmId', [
   ...validateObjectId('filmId')
 ], async (req, res) => {
@@ -1117,9 +1132,47 @@ app.post('/api/films/import', [
 });
 
 // ============================================================
-// ПОЛЬЗОВАТЕЛИ (включая достижения)
+// ПОЛЬЗОВАТЕЛИ — ПРАВИЛЬНЫЙ ПОРЯДОК: сначала статические, потом динамические
 // ============================================================
 
+// ----- СТАТИЧЕСКИЙ РОУТ (достижения текущего пользователя) — ДОЛЖЕН БЫТЬ ВЫШЕ /:id -----
+app.get('/api/users/me/achievements', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'Пользователь не найден' });
+    }
+
+    const ratingsCount = await Rating.countDocuments({ userId: req.userId });
+    const reviewsCount = await Review.countDocuments({ userId: req.userId, status: 'approved' });
+    const commentsCount = await Comment.countDocuments({ userId: req.userId, status: 'approved' });
+
+    const allPossible = await getUserAchievements(
+      req.userId,
+      mongoose.connection.db,
+      ratingsCount,
+      reviewsCount,
+      commentsCount
+    );
+
+    res.json({
+      achievements: user.achievements?.all || [],
+      active: user.achievements?.active || null,
+      possible: allPossible,
+      totalPoints: user.totalPoints || 0,
+      progress: {
+        ratings: ratingsCount,
+        reviews: reviewsCount,
+        comments: commentsCount
+      }
+    });
+  } catch (error) {
+    console.error('Ошибка получения достижений:', error);
+    res.status(500).json({ error: 'Не удалось загрузить достижения' });
+  }
+});
+
+// ----- ДИНАМИЧЕСКИЕ РОУТЫ -----
 app.get('/api/users/:id', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -1135,7 +1188,6 @@ app.get('/api/users/:id', [
     const reviews = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
-    // ✅ ИСПРАВЛЕНО: безопасная проверка токена
     let isOwnProfile = false;
     const token = req.headers.authorization?.split(' ')[1];
     if (token) {
@@ -1143,7 +1195,6 @@ app.get('/api/users/:id', [
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         isOwnProfile = decoded.userId === userId;
       } catch (e) {
-        // Токен невалиден – просто игнорируем
         console.log('⚠️ Невалидный токен при запросе профиля:', e.message);
       }
     }
@@ -1190,21 +1241,21 @@ app.get('/api/users/:id', [
   }
 });
 
-// ===== НОВЫЙ ЭНДПОИНТ: ДОСТИЖЕНИЯ И ПРОГРЕСС =====
-app.get('/api/users/:id/achievements', [
-  ...validateObjectId('id')
-], async (req, res) => {
+// ----- ЕЩЁ ОДИН ДИНАМИЧЕСКИЙ РОУТ (достижения по ID) — с защитой от мусорных ID -----
+app.get('/api/users/:id/achievements', async (req, res) => {
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+    return res.status(400).json({ message: 'Некорректный ID пользователя' });
+  }
+
   try {
     const userId = req.params.id;
     const user = await User.findById(userId).select('achievements nickname');
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-    // Получаем количество оценок, рецензий, комментариев
     const ratingsCount = await Rating.countDocuments({ userId });
     const reviewsCount = await Review.countDocuments({ userId, status: 'approved' });
     const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
 
-    // Получаем все возможные достижения для этого пользователя
     const allPossible = await getUserAchievements(
       userId,
       mongoose.connection.db,
@@ -1273,7 +1324,6 @@ app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, re
     await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
     await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
     
-    // Обновляем достижения автора комментария
     await updateAchievements(comment.userId._id);
 
     res.json(comment);
@@ -1314,7 +1364,6 @@ app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res
     await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
     await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
     
-    // Обновляем достижения автора рецензии
     await updateAchievements(review.userId._id);
 
     res.json(review);
@@ -1358,8 +1407,6 @@ app.get('/api/events', async (req, res) => {
 app.post('/api/events', authenticate, async (req, res) => {
   try {
     const { type, film, filmId, score, metadata } = req.body;
-    
-    // ✅ ИСПРАВЛЕНО: используем только данные из токена
     const user = req.user.nickname;
 
     if (!type || !user || !film) {
@@ -1368,7 +1415,7 @@ app.post('/api/events', authenticate, async (req, res) => {
 
     const newEvent = new Event({
       type,
-      user,  // ✅ БЕРЁМ ИЗ req.user, А НЕ ИЗ ТЕЛА ЗАПРОСА
+      user,
       film,
       filmId: filmId || null,
       score: score || null,
@@ -1385,77 +1432,19 @@ app.post('/api/events', authenticate, async (req, res) => {
 });
 
 // ============================================================
-// НОВЫЕ РОУТЫ ДЛЯ РЕЦЕНЗИЙ И ПОЛЬЗОВАТЕЛЕЙ
-// ============================================================
-
-// ----- РЕЦЕНЗИИ ПОЛЬЗОВАТЕЛЯ -----
-app.get('/api/reviews/user', authenticate, async (req, res) => {
-  try {
-    const reviews = await Review.find({ userId: req.userId })
-      .populate('filmId', 'title year poster')
-      .populate('ratingId', 'finalScore')
-      .sort({ createdAt: -1 });
-    res.json(reviews);
-  } catch (error) {
-    console.error('Ошибка получения рецензий пользователя:', error);
-    res.status(500).json({ error: 'Не удалось загрузить рецензии' });
-  }
-});
-
-// ----- ДОСТИЖЕНИЯ ТЕКУЩЕГО ПОЛЬЗОВАТЕЛЯ -----
-app.get('/api/users/me/achievements', authenticate, async (req, res) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'Пользователь не найден' });
-    }
-
-    const ratingsCount = await Rating.countDocuments({ userId: req.userId });
-    const reviewsCount = await Review.countDocuments({ userId: req.userId, status: 'approved' });
-    const commentsCount = await Comment.countDocuments({ userId: req.userId, status: 'approved' });
-
-    const allPossible = await getUserAchievements(
-      req.userId,
-      mongoose.connection.db,
-      ratingsCount,
-      reviewsCount,
-      commentsCount
-    );
-
-    // ✅ ВСЁ ПРАВИЛЬНО, НИЧЕГО НЕ МЕНЯЕМ
-    res.json({
-      achievements: user.achievements?.all || [],
-      active: user.achievements?.active || null,
-      possible: allPossible,
-      totalPoints: user.totalPoints || 0,
-      progress: {
-        ratings: ratingsCount,
-        reviews: reviewsCount,
-        comments: commentsCount
-      }
-    });
-  } catch (error) {
-    console.error('Ошибка получения достижений:', error);
-    res.status(500).json({ error: 'Не удалось загрузить достижения' });
-  }
-});
-
-// ============================================================
 // ДОСТИЖЕНИЯ
 // ============================================================
 
 // 1. ДОБАВИТЬ ДОСТИЖЕНИЕ (ТОЛЬКО ДЛЯ АДМИНОВ)
-app.post('/api/achievements/add', authenticate, isAdmin, async (req, res) => {  // ✅ ДОБАВЛЕН isAdmin
+app.post('/api/achievements/add', authenticate, isAdmin, async (req, res) => {
   try {
     const { id, title, icon, description } = req.body;
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-    // Проверяем, есть ли уже такое достижение
     const exists = user.achievements.all.some(a => a.id === id);
     if (exists) return res.json({ message: 'Уже есть' });
 
-    // ✅ ПРАВИЛЬНО: используем $push для добавления в массив all
     await User.findByIdAndUpdate(req.userId, {
       $push: { 
         'achievements.all': { 
@@ -1468,7 +1457,6 @@ app.post('/api/achievements/add', authenticate, isAdmin, async (req, res) => {  
       }
     });
 
-    // Если активного нет — делаем это активным
     if (!user.achievements.active) {
       await User.findByIdAndUpdate(req.userId, {
         $set: { 'achievements.active': id }
@@ -1493,7 +1481,6 @@ app.post('/api/achievements/activate', authenticate, async (req, res) => {
     const exists = user.achievements.all.some(a => a.id === id);
     if (!exists) return res.status(404).json({ error: 'Достижение не найдено' });
 
-    // ✅ ПРАВИЛЬНО: обновляем только поле active
     await User.findByIdAndUpdate(req.userId, {
       $set: { 'achievements.active': id }
     });
@@ -1510,8 +1497,6 @@ app.get('/api/achievements', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    
-    // ✅ ПРАВИЛЬНО: безопасный доступ через optional chaining
     res.json(user.achievements?.all || []);
   } catch (error) {
     console.error('Ошибка получения достижений:', error);
