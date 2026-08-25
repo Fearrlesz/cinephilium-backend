@@ -23,9 +23,7 @@ console.log('✅ Разрешённые CORS-источники:', allowedOrigin
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Разрешаем запросы без origin (например, от curl или мобильных приложений)
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -71,7 +69,6 @@ const userSchema = new mongoose.Schema({
   avatar: { type: String, default: '' },
   isAdmin: { type: Boolean, default: false },
   totalPoints: { type: Number, default: 0 },
-  // ✅ НОВОЕ ПОЛЕ ДЛЯ ДОСТИЖЕНИЙ
   achievements: { type: [String], default: [] },
   registeredAt: { type: Date, default: Date.now }
 });
@@ -144,11 +141,18 @@ const actionSchema = new mongoose.Schema({
 });
 
 // ----- СОБЫТИЯ (для ленты активности) -----
+// ИСПРАВЛЕНО: добавлен тип 'achievement' и поле metadata
 const eventSchema = new mongoose.Schema({
-  type: { type: String, required: true, enum: ['rating', 'review', 'comment', 'film_add'] },
+  type: { 
+    type: String, 
+    required: true, 
+    enum: ['rating', 'review', 'comment', 'film_add', 'achievement'] 
+  },
   user: { type: String, required: true },
   film: { type: String, required: true },
+  filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film' },
   score: { type: Number, default: null },
+  metadata: { type: mongoose.Schema.Types.Mixed },   // для хранения достижений и пр.
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -209,9 +213,10 @@ async function existsById(model, id) {
   return await model.findById(id) !== null;
 }
 
-async function createEvent(type, user, film, score = null) {
+// ДОБАВЛЕН параметр metadata
+async function createEvent(type, user, film, filmId = null, score = null, metadata = null) {
   try {
-    await Event.create({ type, user, film, score });
+    await Event.create({ type, user, film, filmId, score, metadata });
   } catch (error) {
     console.error('Ошибка создания события:', error);
   }
@@ -435,7 +440,7 @@ app.post('/api/comments', [
     const points = req.isAdmin ? 10 : 2;
     await addPoints(req.userId, req.userId, 'comment', points, comment._id);
 
-    await createEvent('comment', req.user.nickname, film.title);
+    await createEvent('comment', req.user.nickname, film.title, filmId);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
@@ -533,7 +538,7 @@ app.post('/api/reviews', [
     const points = req.isAdmin ? 50 : 30;
     await addPoints(req.userId, req.userId, 'review', points, review._id);
 
-    await createEvent('review', req.user.nickname, film.title);
+    await createEvent('review', req.user.nickname, film.title, filmId);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -541,6 +546,20 @@ app.post('/api/reviews', [
     res.json(reviewWithUser);
   } catch (error) {
     console.error('Ошибка добавления рецензии:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
+// ДОБАВЛЕН ЭНДПОИНТ: мои рецензии
+app.get('/api/reviews/user', authenticate, async (req, res) => {
+  try {
+    const reviews = await Review.find({ userId: req.userId })
+      .populate('filmId', 'title poster year')
+      .populate('ratingId', 'finalScore')
+      .sort({ createdAt: -1 });
+    res.json(reviews);
+  } catch (error) {
+    console.error('Ошибка получения рецензий пользователя:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
@@ -730,7 +749,7 @@ app.post('/api/ratings', [
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
-      await createEvent('rating', req.user.nickname, film.title, finalScore);
+      await createEvent('rating', req.user.nickname, film.title, filmId, finalScore);
     }
 
     res.json({ rating, technicalScore, finalScore });
@@ -890,7 +909,7 @@ app.post('/api/films/import', [
     if (isNew) {
       const points = req.isAdmin ? 5 : 2;
       await addPoints(req.userId, req.userId, 'import', points, film._id);
-      await createEvent('film_add', req.user.nickname, film.title);
+      await createEvent('film_add', req.user.nickname, film.title, film._id);
     }
 
     res.json(film);
@@ -903,6 +922,22 @@ app.post('/api/films/import', [
 // ============================================================
 // ПОЛЬЗОВАТЕЛИ
 // ============================================================
+
+// ДОБАВЛЕН ЭНДПОИНТ: достижения текущего пользователя
+app.get('/api/users/me/achievements', authenticate, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select('achievements totalPoints');
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    
+    res.json({
+      achievements: user.achievements || [],
+      totalPoints: user.totalPoints,
+    });
+  } catch (error) {
+    console.error('Ошибка получения достижений:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
 
 app.get('/api/users/:id', [
   ...validateObjectId('id')
@@ -1069,6 +1104,19 @@ app.get('/api/events', async (req, res) => {
   } catch (error) {
     console.error('Ошибка загрузки событий:', error);
     res.status(500).json({ error: 'Ошибка загрузки событий' });
+  }
+});
+
+// ДОБАВЛЕН ЭНДПОИНТ: создание события с возвратом созданного объекта и поддержкой metadata
+app.post('/api/events', authenticate, async (req, res) => {
+  try {
+    const { type, user, film, filmId, score, metadata } = req.body;
+    const event = new Event({ type, user, film, filmId, score, metadata });
+    await event.save();
+    res.status(201).json(event);
+  } catch (error) {
+    console.error('Ошибка создания события:', error);
+    res.status(500).json({ error: 'Ошибка создания события' });
   }
 });
 
