@@ -1176,18 +1176,17 @@ app.get('/api/users/:id', [
         achievements: user.achievements || [],
         email: isOwnProfile ? user.email : undefined
       },
-      ratings: ratings.map(r => ({
-        id: r._id,
-        film: r.filmId,
-        finalScore: r.finalScore,
-        technicalScore: r.technicalScore,
-        subjectiveM: r.subjectiveM,
-        base1: r.base1,
-        base2: r.base2,
-        base3: r.base3,
-        base4: r.base4,
-        textReview: r.textReview
-      })),
+      /* === БЛОК S5: Профиль пользователя (замена ratings) === */
+ratings: ratings.map(r => ({
+  id: r._id,
+  film: r.filmId,
+  technicalScore: r.technicalScore,
+  combinedScore: r.combinedScore,
+  vibe: r.vibe,
+  genrePreset: r.genrePreset,
+  scores: r.scores,
+  textReview: r.textReview
+})),
       reviews: reviews.map(r => ({
         id: r._id,
         film: r.filmId,
