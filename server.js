@@ -405,49 +405,46 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ============================================================
 // ФИЛЬМЫ
 // ============================================================
-
-app.get('/api/films', async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = parseInt(req.query.limit) || 20;
-  const skip = (page - 1) * limit;
+app.get('/api/films/:id', [
+  ...validateObjectId('id')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
   try {
-    const filmsWithRatings = await Film.aggregate([
-      { $sort: { createdAt: -1 } },
-      { $skip: skip },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: 'ratings',
-          localField: '_id',
-          foreignField: 'filmId',
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating: {
-            $cond: [
-              { $gt: [{ $size: '$ratings' }, 0] },
-              { $round: [{ $avg: '$ratings.finalScore' }, 1] },
-              0
-            ]
-          },
-          votesCount: { $size: '$ratings' }
-        }
-      },
-      { $project: { ratings: 0 } }
+    const film = await Film.findById(req.params.id);
+    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+
+    const ratingData = await Rating.aggregate([
+      { $match: { filmId: film._id } },
+      { $group: {
+        _id: null,
+        avgRating: { $avg: '$combinedScore' },  // <-- ИСПРАВЛЕНО: combinedScore вместо finalScore
+        total: { $sum: 1 }
+      }}
     ]);
 
-    const total = await Film.countDocuments();
+    // ИЗВЛЕКАЕМ ДАННЫЕ ИЗ РЕЗУЛЬТАТА
+    const avgRating = ratingData[0]?.avgRating || 0;
+    const votesCount = ratingData[0]?.total || 0;
+
+    let userRating = null;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
+      } catch (e) {}
+    }
+
     res.json({
-      films: filmsWithRatings,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit)
+      ...film.toObject(),
+      averageRating: avgRating,  // <-- ИСПРАВЛЕНО: переменная определена
+      votesCount,               // <-- ИСПРАВЛЕНО: переменная определена
+      userRating
     });
   } catch (error) {
-    console.error('Ошибка загрузки фильмов:', error);
+    console.error('Ошибка загрузки фильма:', error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
 });
