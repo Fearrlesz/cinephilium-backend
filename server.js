@@ -518,7 +518,7 @@ app.get('/api/films/search-by-title', async (req, res) => {
 });
 
 /* === БЛОК S8: GET /api/films/:id/ratings === */
-router.get('/films/:id/ratings', async (req, res) => {
+app.get('/api/films/:id/ratings', async (req, res) => {
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
       .populate('userId', 'username avatar')
