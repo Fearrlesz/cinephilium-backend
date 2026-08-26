@@ -867,64 +867,81 @@ app.get('/api/top/users', async (req, res) => {
   }
 });
 
-// ============================================================
-// ОЦЕНКИ
-// ============================================================
-
-app.post('/api/ratings', [
-  body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
-  body('base1').isArray({ min: 5, max: 5 }).custom(v => v.every(n => n >= 1 && n <= 10)),
-  body('base2').isArray({ min: 5, max: 5 }).custom(v => v.every(n => n >= 1 && n <= 10)),
-  body('base3').isArray({ min: 5, max: 5 }).custom(v => v.every(n => n >= 1 && n <= 10)),
-  body('base4').isArray({ min: 5, max: 5 }).custom(v => v.every(n => n >= 1 && n <= 10)),
-  body('subjectiveM').isInt({ min: 1, max: 10 })
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
+/* === БЛОК S3: POST /api/ratings === */
+app.post('/api/ratings', authenticate, async (req, res) => {
   try {
-    const { filmId, base1, base2, base3, base4, subjectiveM, textReview } = req.body;
+    const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
+
+    if (!filmId) return res.status(400).json({ message: 'filmId обязателен' });
+
+    if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
+      return res.status(400).json({ message: 'vibe должен быть от 1 до 10' });
+    }
+
+    let weightsArray;
+    if (genrePreset && GENRE_PRESETS[genrePreset] && genrePreset !== 'hybrid') {
+      weightsArray = GENRE_PRESETS[genrePreset];
+    } else if (blockWeights) {
+      if (!Array.isArray(blockWeights) || blockWeights.length !== 5) {
+        return res.status(400).json({ message: 'blockWeights должен быть массивом из 5 чисел' });
+      }
+      const allValid = blockWeights.every(w => Number.isFinite(w) && w >= 0 && w <= 100);
+      const sum = blockWeights.reduce((a,b)=>a+b,0);
+      if (!allValid || sum !== 100) {
+        return res.status(400).json({ message: 'Сумма весов блоков должна быть строго 100' });
+      }
+      weightsArray = blockWeights;
+    } else {
+      weightsArray = [30,25,20,15,10]; // базовые
+    }
+    
+    const weights = {
+      scenario: weightsArray[0], characters: weightsArray[1], visual: weightsArray[2],
+      sound: weightsArray[3], style: weightsArray[4]
+    };
+
+    const technicalScore = calculateTechnicalScore(scores, weights);
+    const combinedScore = roundTenth(technicalScore * 0.7 + vibe * 3);
+
     const film = await Film.findById(filmId);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
-    const { technicalScore, finalScore } = calculateRating(base1, base2, base3, base4, subjectiveM);
+    // Проверяем, существует ли уже оценка
+    const existingRating = await Rating.findOne({ userId: req.userId, filmId });
+    const isNew = !existingRating;
 
-    let rating = await Rating.findOne({ userId: req.userId, filmId });
-    let isNew = false;
+    // Сохраняем оценку
+    const rating = await Rating.findOneAndUpdate(
+      { userId: req.userId, filmId },
+      {
+        $set: {
+          genrePreset: genrePreset || null,
+          blockWeights: weights,
+          scores,
+          vibe,
+          technicalScore,
+          combinedScore,
+          textReview: textReview || ''
+        }
+      },
+      { upsert: true, new: true }
+    );
 
-    if (rating) {
-      rating.base1 = base1;
-      rating.base2 = base2;
-      rating.base3 = base3;
-      rating.base4 = base4;
-      rating.subjectiveM = subjectiveM;
-      rating.technicalScore = technicalScore;
-      rating.finalScore = finalScore;
-      rating.textReview = textReview || '';
-      rating.updatedAt = new Date();
-      await rating.save();
-    } else {
-      rating = new Rating({
-        userId: req.userId,
-        filmId,
-        base1,
-        base2,
-        base3,
-        base4,
-        subjectiveM,
-        technicalScore,
-        finalScore,
-        textReview: textReview || ''
-      });
-      await rating.save();
-      isNew = true;
-    }
-
+    // Если оценка новая - начисляем очки и создаём событие
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
-      await createEvent('rating', req.user.nickname, film.title, film._id, finalScore, rating._id);
+      
+      // ВАЖНО: используем combinedScore вместо finalScore
+      await createEvent('rating', req.user.nickname, film.title, film._id, rating.combinedScore, rating._id);
     }
+
+    res.status(201).json({ rating, technicalScore, finalScore: technicalScore });
+  } catch (err) {
+    console.error('Ошибка сохранения оценки:', err);
+    res.status(500).json({ message: 'Ошибка сервера' });
+  }
+});
 
     // Обновляем достижения после оценки
     await updateAchievements(req.userId);
