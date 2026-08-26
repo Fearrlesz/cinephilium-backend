@@ -517,47 +517,33 @@ app.get('/api/films/search-by-title', async (req, res) => {
   }
 });
 
-// ===== ПОЛУЧЕНИЕ ПОЛЬЗОВАТЕЛЕЙ, ОЦЕНИВШИХ ФИЛЬМ =====
-app.get('/api/films/:filmId/users', [
-  ...validateObjectId('filmId')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
+/* === БЛОК S8: GET /api/films/:id/ratings === */
+router.get('/films/:id/ratings', async (req, res) => {
   try {
-    const { filmId } = req.params;
-
-    const film = await Film.findById(filmId);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
-
-    const ratings = await Rating.find({ filmId })
-      .populate('userId', 'nickname isAdmin avatar')
-      .lean();
-
-    const usersWithRatings = ratings.map(rating => ({
-      user: {
-        _id: rating.userId._id,
-        nickname: rating.userId.nickname || 'Пользователь',
-        isAdmin: rating.userId.isAdmin || false,
-        avatar: rating.userId.avatar || ''
-      },
-      rating: {
-        _id: rating._id,
-        finalScore: rating.finalScore,
-        base1: rating.base1,
-        base2: rating.base2,
-        base3: rating.base3,
-        base4: rating.base4,
-        subjectiveM: rating.subjectiveM,
-        textReview: rating.textReview || '',
-        createdAt: rating.createdAt
-      }
+    const ratings = await Rating.find({ filmId: req.params.id })
+      .populate('userId', 'username avatar')
+      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
+      .sort({ createdAt: -1 });
+    
+    const formattedRatings = ratings.map(r => ({
+      _id: r._id,
+      userName: r.userId?.username || 'Пользователь',
+      userAvatar: r.userId?.avatar,
+      technicalScore: r.technicalScore,
+      combinedScore: r.combinedScore,
+      vibe: r.vibe,
+      textReview: r.textReview,
+      likes: r.likes,
+      createdAt: r.createdAt,
+      genrePreset: r.genrePreset,
+      blockWeights: r.blockWeights,
+      scores: r.scores
     }));
-
-    res.json(usersWithRatings);
-  } catch (error) {
-    console.error('Ошибка получения пользователей, оценивших фильм:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    
+    res.json(formattedRatings);
+  } catch (err) {
+    console.error('Ошибка загрузки оценок:', err);
+    res.status(500).json({ message: 'Ошибка сервера' });
   }
 });
 
