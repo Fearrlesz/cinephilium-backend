@@ -511,6 +511,82 @@ app.get('/api/films/:id/ratings', async (req, res) => {
   }
 });
 
+/* === БЛОК S6: GET /api/films — список фильмов с сортировкой === */
+app.get('/api/films', async (req, res) => {
+  try {
+    const sort = req.query.sort || 'technical';
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
+
+    // Определяем поле сортировки
+    let sortField;
+    switch (sort) {
+      case 'combined':
+        sortField = 'averageCombined';
+        break;
+      case 'vibe':
+        sortField = 'averageVibe';
+        break;
+      case 'technical':
+      default:
+        sortField = 'averageRating';
+        break;
+    }
+
+    // Агрегация фильмов с их рейтингами
+    const films = await Film.aggregate([
+      {
+        $lookup: {
+          from: 'ratings',
+          localField: '_id',
+          foreignField: 'filmId',
+          as: 'ratings'
+        }
+      },
+      {
+        $addFields: {
+          averageRating: { $avg: '$ratings.technicalScore' },
+          averageVibe: { $avg: '$ratings.vibe' },
+          averageCombined: { $avg: '$ratings.combinedScore' },
+          votesCount: { $size: '$ratings' }
+        }
+      },
+      {
+        $project: {
+          ratings: 0  // убираем массив оценок из результата
+        }
+      },
+      {
+        $sort: { [sortField]: -1 }  // по убыванию (desc)
+      },
+      {
+        $skip: skip
+      },
+      {
+        $limit: limit
+      }
+    ]);
+
+    // Получаем общее количество фильмов для пагинации
+    const total = await Film.countDocuments();
+
+    res.json({
+      films,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      },
+      sort: sortField
+    });
+  } catch (error) {
+    console.error('Ошибка загрузки фильмов:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ============================================================
 // КОММЕНТАРИИ
 // ============================================================
