@@ -449,47 +449,6 @@ app.get('/api/films/:id', [
   }
 });
 
-app.get('/api/films/:id', [
-  ...validateObjectId('id')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
-  try {
-    const film = await Film.findById(req.params.id);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
-
-    const ratingData = await Rating.aggregate([
-      { $match: { filmId: film._id } },
-      { $group: {
-        _id: null,
-        avgRating: { $avg: '$finalScore' },
-        total: { $sum: 1 }
-      }}
-    ]);
-
-    let userRating = null;
-    const token = req.headers.authorization?.split(' ')[1];
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
-      } catch (e) {}
-    }
-
-
-    res.json({
-      ...film.toObject(),
-      averageRating: avgRating,
-      votesCount,
-      userRating
-    });
-  } catch (error) {
-    console.error('Ошибка загрузки фильма:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
 // ===== ПОИСК ФИЛЬМА ПО НАЗВАНИЮ =====
 app.get('/api/films/search-by-title', async (req, res) => {
   try {
@@ -518,13 +477,13 @@ app.get('/api/films/search-by-title', async (req, res) => {
 app.get('/api/films/:id/ratings', async (req, res) => {
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
-      .populate('userId', 'username avatar')
+      .populate('userId', 'nickname avatar')  // ✅ ИСПРАВЛЕНО: nickname
       .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
       .sort({ createdAt: -1 });
     
     const formattedRatings = ratings.map(r => ({
       _id: r._id,
-      userName: r.userId?.username || 'Пользователь',
+      userName: r.userId?.nickname || 'Пользователь',  // ✅ ИСПРАВЛЕНО: nickname
       userAvatar: r.userId?.avatar,
       technicalScore: r.technicalScore,
       combinedScore: r.combinedScore,
