@@ -480,11 +480,11 @@ app.get('/api/films/:id', [
       } catch (e) {}
     }
 
-    /* === БЛОК S4: Агрегации средних значений === */
+/* === БЛОК S4: Агрегации средних значений === */
 averageRating: { $round: [{ $avg: '$ratings.technicalScore' }, 1] },
-averageVibe:   { $round: [{ $avg: '$ratings.vibe' }, 1] },
+averageVibe: { $round: [{ $avg: '$ratings.vibe' }, 1] },
 averageCombined: { $round: [{ $avg: '$ratings.combinedScore' }, 1] },
-// votesCount остаётся без изменений: { $size: '$ratings' }
+votesCount: { $size: '$ratings' }
 
     res.json({
       ...film.toObject(),
