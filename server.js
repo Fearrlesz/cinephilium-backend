@@ -185,34 +185,40 @@ const Review = mongoose.model('Review', reviewSchema);
 const Action = mongoose.model('Action', actionSchema);
 const Event = mongoose.model('Event', eventSchema);
 
-// ============================================================
-// ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-// ============================================================
+/* === БЛОК S2: Конфиг и расчёт технического балла (заменяет calculateRating и константы) === */
+const BLOCK_CRITERIA = {
+  scenario:   { plot: .35, ideas: .35, dialogue: .30 },
+  characters: { depth: .40, chemistry: .35, functionality: .25 },
+  visual:     { composition: .25, cinematography: .25, pacing: .25, tone: .25 },
+  sound:      { music: .40, design: .35, narrative: .25 },
+  style:      { originality: .50, boldness: .50 }
+};
+const GENRE_PRESETS = {
+  drama:[25,20,20,15,20], action:[20,20,30,20,10], comedy:[30,30,15,15,10],
+  horror:[25,20,20,25,10], scifi_block:[25,20,25,20,10], scifi_author:[20,20,25,15,20],
+  musical:[20,20,20,30,10], biopic:[30,30,20,15,5], hybrid:null
+};
+const roundTenth = n => Math.round(n * 10) / 10;
 
-function calculateRating(base1, base2, base3, base4, subjectiveM) {
-  // 1. Без округления — просто средние
-  const avg1 = base1.reduce((a, b) => a + b, 0) / 5;
-  const avg2 = base2.reduce((a, b) => a + b, 0) / 5;
-  const avg3 = base3.reduce((a, b) => a + b, 0) / 5;
-  const avg4 = base4.reduce((a, b) => a + b, 0) / 5;
-  
-  // 2. Сумма баз
-  const sum = avg1 + avg2 + avg3 + avg4;
-  
-  // 3. T = Сумма × 1.4
-  const T = sum * 1.4;
-  
-  // 4. Вайб-множитель
-  const vibeMultiplier = 1 + (subjectiveM - 1) * 0.06747;
-  
-  // 5. Итог (округляется только в конце!)
-  const finalRaw = T * vibeMultiplier;
-  
-  return {
-    technicalScore: Math.round(T),
-    finalScore: Math.round(finalRaw)
-  };
+function calculateTechnicalScore(scores, weights /* объект {scenario,...} */) {
+  const blockAvgs = {};
+  for (const [block, crit] of Object.entries(BLOCK_CRITERIA)) {
+    let avg = 0;
+    for (const [name, w] of Object.entries(crit)) {
+      const v = scores[block]?.[name];
+      if (!Number.isFinite(v) || v < 1 || v > 10) throw new Error(`Некорректная оценка: ${block}.${name}`);
+      avg += v * w;
+    }
+    blockAvgs[block] = avg;
+  }
+  return roundTenth(
+    blockAvgs.scenario*(weights.scenario/100) + blockAvgs.characters*(weights.characters/100) +
+    blockAvgs.visual*(weights.visual/100) + blockAvgs.sound*(weights.sound/100) +
+    blockAvgs.style*(weights.style/100)
+  ) * 10;
 }
+
+// Вспомогательные функции addPoints, removePointsByAction, existsById остаются без изменений
 async function addPoints(userId, actorId, type, points, refId = null) {
   const user = await User.findById(userId);
   if (!user) return false;
