@@ -91,22 +91,31 @@ const filmSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
-// ----- ОЦЕНКИ -----
+/* === БЛОК S1: Новая схема Rating === */
 const ratingSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
-  base1: { type: [Number], required: true, validate: v => v.length === 5 && v.every(n => n >= 1 && n <= 10) },
-  base2: { type: [Number], required: true, validate: v => v.length === 5 && v.every(n => n >= 1 && n <= 10) },
-  base3: { type: [Number], required: true, validate: v => v.length === 5 && v.every(n => n >= 1 && n <= 10) },
-  base4: { type: [Number], required: true, validate: v => v.length === 5 && v.every(n => n >= 1 && n <= 10) },
-  subjectiveM: { type: Number, required: true, min: 1, max: 10 },
+  genrePreset: { type: String, default: null },
+  blockWeights: {
+    scenario: Number, characters: Number, visual: Number,
+    sound: Number, style: Number
+  },
+  scores: {
+    scenario:   { plot: Number, ideas: Number, dialogue: Number },
+    characters: { depth: Number, chemistry: Number, functionality: Number },
+    visual:     { composition: Number, cinematography: Number, pacing: Number, tone: Number },
+    sound:      { music: Number, design: Number, narrative: Number },
+    style:      { originality: Number, boldness: Number }
+  },
+  vibe: { type: Number, min: 1, max: 10, required: true },
   technicalScore: Number,
-  finalScore: Number,
-  textReview: { type: String, maxlength: 2000 },
-  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+  combinedScore: Number,
+  textReview: { type: String, maxlength: 2000, default: '' },
+  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+}, { timestamps: true });
+
+ratingSchema.index({ userId: 1, filmId: 1 }, { unique: true });
+ratingSchema.index({ filmId: 1 });
 
 // ----- КОММЕНТАРИИ -----
 const commentSchema = new mongoose.Schema({
