@@ -867,17 +867,46 @@ app.get('/api/top/users', async (req, res) => {
   }
 });
 
-/* === БЛОК S3: POST /api/ratings === */
+
+/* === БЛОК S3: POST /api/ratings (исправленный) === */
 app.post('/api/ratings', authenticate, async (req, res) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
+    // Валидация filmId
     if (!filmId) return res.status(400).json({ message: 'filmId обязателен' });
 
+    // Валидация scores (базовая проверка структуры)
+    if (!scores || typeof scores !== 'object') {
+      return res.status(400).json({ message: 'scores обязателен и должен быть объектом' });
+    }
+    // Проверка каждого блока и критерия (опционально, можно расширить)
+    const requiredBlocks = ['scenario', 'characters', 'visual', 'sound', 'style'];
+    const requiredCriteria = {
+      scenario: ['plot', 'ideas', 'dialogue'],
+      characters: ['depth', 'chemistry', 'functionality'],
+      visual: ['composition', 'cinematography', 'pacing', 'tone'],
+      sound: ['music', 'design', 'narrative'],
+      style: ['originality', 'boldness']
+    };
+    for (const block of requiredBlocks) {
+      if (!scores[block] || typeof scores[block] !== 'object') {
+        return res.status(400).json({ message: `Блок ${block} отсутствует или некорректен` });
+      }
+      for (const crit of requiredCriteria[block]) {
+        const val = scores[block][crit];
+        if (!Number.isFinite(val) || val < 1 || val > 10) {
+          return res.status(400).json({ message: `Некорректное значение ${block}.${crit}` });
+        }
+      }
+    }
+
+    // Валидация vibe
     if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
       return res.status(400).json({ message: 'vibe должен быть от 1 до 10' });
     }
 
+    // Выбор весов
     let weightsArray;
     if (genrePreset && GENRE_PRESETS[genrePreset] && genrePreset !== 'hybrid') {
       weightsArray = GENRE_PRESETS[genrePreset];
@@ -892,9 +921,8 @@ app.post('/api/ratings', authenticate, async (req, res) => {
       }
       weightsArray = blockWeights;
     } else {
-      weightsArray = [30,25,20,15,10]; // базовые
+      weightsArray = [30,25,20,15,10];
     }
-    
     const weights = {
       scenario: weightsArray[0], characters: weightsArray[1], visual: weightsArray[2],
       sound: weightsArray[3], style: weightsArray[4]
@@ -906,11 +934,11 @@ app.post('/api/ratings', authenticate, async (req, res) => {
     const film = await Film.findById(filmId);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
-    // Проверяем, существует ли уже оценка
+    // Проверяем наличие существующей оценки
     const existingRating = await Rating.findOne({ userId: req.userId, filmId });
     const isNew = !existingRating;
 
-    // Сохраняем оценку
+    // Сохраняем (создаём или обновляем)
     const rating = await Rating.findOneAndUpdate(
       { userId: req.userId, filmId },
       {
@@ -927,31 +955,32 @@ app.post('/api/ratings', authenticate, async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // Если оценка новая - начисляем очки и создаём событие
+    // Если оценка новая – начисляем очки и создаём событие
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
       
-      // ВАЖНО: используем combinedScore вместо finalScore
-      await createEvent('rating', req.user.nickname, film.title, film._id, rating.combinedScore, rating._id);
+      // Получаем ник пользователя (если не передан в req.user)
+      const user = await User.findById(req.userId);
+      const nickname = user?.nickname || 'Пользователь';
+      
+      // Создаём событие с combinedScore
+      await createEvent('rating', nickname, film.title, film._id, rating.combinedScore, rating._id);
+
+      // Обновляем достижения (если функция есть)
+      if (typeof updateAchievements === 'function') {
+        await updateAchievements(req.userId);
+      }
     }
 
-    res.status(201).json({ rating, technicalScore, finalScore: technicalScore });
+    // Ответ: finalScore оставляем для совместимости, но можно вернуть и combinedScore
+    res.status(201).json({ rating, technicalScore, finalScore: technicalScore, combinedScore });
   } catch (err) {
     console.error('Ошибка сохранения оценки:', err);
     res.status(500).json({ message: 'Ошибка сервера' });
   }
 });
 
-    // Обновляем достижения после оценки
-    await updateAchievements(req.userId);
-
-    res.json({ rating, technicalScore, finalScore });
-  } catch (error) {
-    console.error('Ошибка сохранения оценки:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
 
 app.get('/api/ratings/user', authenticate, async (req, res) => {
   try {
