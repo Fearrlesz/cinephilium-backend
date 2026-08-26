@@ -405,6 +405,8 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ============================================================
 // ФИЛЬМЫ
 // ============================================================
+
+/* === БЛОК S4: GET /api/films/:id с тремя средними === */
 app.get('/api/films/:id', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -415,17 +417,21 @@ app.get('/api/films/:id', [
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
+    // Агрегация с тремя средними
     const ratingData = await Rating.aggregate([
       { $match: { filmId: film._id } },
       { $group: {
         _id: null,
-        avgRating: { $avg: '$combinedScore' },  // <-- ИСПРАВЛЕНО: combinedScore вместо finalScore
+        avgTechnical: { $avg: '$technicalScore' },
+        avgVibe: { $avg: '$vibe' },
+        avgCombined: { $avg: '$combinedScore' },
         total: { $sum: 1 }
       }}
     ]);
 
-    // ИЗВЛЕКАЕМ ДАННЫЕ ИЗ РЕЗУЛЬТАТА
-    const avgRating = ratingData[0]?.avgRating || 0;
+    const avgTechnical = ratingData[0]?.avgTechnical || 0;
+    const avgVibe = ratingData[0]?.avgVibe || 0;
+    const avgCombined = ratingData[0]?.avgCombined || 0;
     const votesCount = ratingData[0]?.total || 0;
 
     let userRating = null;
@@ -439,8 +445,10 @@ app.get('/api/films/:id', [
 
     res.json({
       ...film.toObject(),
-      averageRating: avgRating,  // <-- ИСПРАВЛЕНО: переменная определена
-      votesCount,               // <-- ИСПРАВЛЕНО: переменная определена
+      averageRating: avgTechnical,    // ТБ — основной рейтинг
+      averageVibe: avgVibe,           // 💫 средний вайб
+      averageCombined: avgCombined,   // комбинированный
+      votesCount,
       userRating
     });
   } catch (error) {
