@@ -481,27 +481,33 @@ app.get('/api/films/search-by-title', async (req, res) => {
   }
 });
 
-/* === БЛОК S8: GET /api/films/:id/ratings === */
 app.get('/api/films/:id/ratings', async (req, res) => {
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
-      .populate('userId', 'nickname avatar')  // ✅ ИСПРАВЛЕНО: nickname
-      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
+      .populate('userId', 'nickname avatar isAdmin') // ✅ Добавь isAdmin
+      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores finalScore') // ✅ Добавь finalScore
       .sort({ createdAt: -1 });
     
     const formattedRatings = ratings.map(r => ({
-      _id: r._id,
-      userName: r.userId?.nickname || 'Пользователь',  // ✅ ИСПРАВЛЕНО: nickname
-      userAvatar: r.userId?.avatar,
-      technicalScore: r.technicalScore,
-      combinedScore: r.combinedScore,
-      vibe: r.vibe,
-      textReview: r.textReview,
-      likes: r.likes,
-      createdAt: r.createdAt,
-      genrePreset: r.genrePreset,
-      blockWeights: r.blockWeights,
-      scores: r.scores
+      rating: {
+        _id: r._id,
+        finalScore: r.finalScore, // ✅ Добавлено
+        technicalScore: r.technicalScore,
+        combinedScore: r.combinedScore,
+        vibe: r.vibe,
+        textReview: r.textReview,
+        likes: r.likes,
+        createdAt: r.createdAt,
+        genrePreset: r.genrePreset,
+        blockWeights: r.blockWeights,
+        scores: r.scores
+      },
+      user: {
+        _id: r.userId?._id,
+        nickname: r.userId?.nickname || 'Пользователь',
+        avatar: r.userId?.avatar,
+        isAdmin: r.userId?.isAdmin || false // ✅ Добавлено
+      }
     }));
     
     res.json(formattedRatings);
@@ -510,6 +516,7 @@ app.get('/api/films/:id/ratings', async (req, res) => {
     res.status(500).json({ message: 'Ошибка сервера' });
   }
 });
+
 
 /* === БЛОК S6: GET /api/films — список фильмов с сортировкой === */
 app.get('/api/films', async (req, res) => {
