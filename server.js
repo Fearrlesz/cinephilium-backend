@@ -517,6 +517,36 @@ app.get('/api/films/:id/ratings', async (req, res) => {
   }
 });
 
+// Новый эндпоинт для получения пользователей с их оценками (лёгкая версия)
+app.get('/api/films/:id/users', async (req, res) => {
+  try {
+    const filmId = req.params.id;
+
+    // Запрашиваем только те поля, которые нужны для списка
+    const ratings = await Rating.find({ filmId })
+      .populate('userId', 'nickname isAdmin') // avatar не нужен, если не используется в UI
+      .select('combinedScore technicalScore') // берём только то, из чего получим finalScore
+      .lean(); // для производительности
+
+    // Трансформируем в ожидаемый фронтендом формат
+    const result = ratings.map(r => ({
+      user: {
+        _id: r.userId._id,
+        nickname: r.userId.nickname,
+        isAdmin: r.userId.isAdmin || false,
+      },
+      rating: {
+        _id: r._id,
+        finalScore: r.combinedScore ?? r.technicalScore ?? 0, // приоритет combinedScore
+      },
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error('Ошибка загрузки пользователей фильма:', err);
+    res.status(500).json({ message: 'Ошибка сервера' });
+  }
+});
 
 /* === БЛОК S6: GET /api/films — список фильмов с сортировкой === */
 app.get('/api/films', async (req, res) => {
