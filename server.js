@@ -1221,6 +1221,29 @@ app.post('/api/films/import', [
 });
 
 // ============================================================
+// ПРОКСИ ДЛЯ ПОСТЕРОВ TMDB (обход блокировки image.tmdb.org)
+// ============================================================
+app.get('/api/poster/*', async (req, res) => {
+  const path = req.params[0]; // например "w500/abc.jpg"
+  if (!path || path.includes('..')) return res.status(400).end();
+
+  try {
+    const r = await fetch(`https://image.tmdb.org/t/p/${path}`);
+    if (!r.ok) return res.status(404).end();
+
+    // Кэшируем на неделю — браузер пользователя не будет дёргать бэкенд каждый раз
+    res.set('Cache-Control', 'public, max-age=604800, immutable');
+    res.set('Content-Type', r.headers.get('content-type') || 'image/jpeg');
+
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.send(buf);
+  } catch (err) {
+    console.error('Ошибка прокси постера:', err);
+    res.status(502).end();
+  }
+});
+
+// ============================================================
 // ПОЛЬЗОВАТЕЛИ (включая достижения)
 // ============================================================
 
