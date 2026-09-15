@@ -1154,23 +1154,30 @@ app.post('/api/films/import', [
     const { tmdbId } = req.body;
     const apiKey = process.env.TMDB_API_KEY;
 
-    const filmResponse = await fetch(
-      `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`
-    );
+    // ✅ Два запроса параллельно: RU для метаданных, EN как фолбэк для постера
+    const [ruResponse, enResponse] = await Promise.all([
+      fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`),
+      fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=en-US`)
+    ]);
 
-    if (!filmResponse.ok) {
-      throw new Error(`TMDB API error: ${filmResponse.status}`);
+    if (!ruResponse.ok) {
+      throw new Error(`TMDB API error (ru): ${ruResponse.status}`);
     }
 
-    const filmData = await filmResponse.json();
+    const filmData = await ruResponse.json();
+    const enData = enResponse.ok ? await enResponse.json() : {};
+
     if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
+
+    // ✅ Берём постер: сначала русский, потом английский, иначе пусто
+    const posterPath = filmData.poster_path || enData.poster_path || null;
 
     const filmDataForSave = {
       tmdbId: filmData.id,
       title: filmData.title,
-      year: new Date(filmData.release_date).getFullYear(),
-      poster: filmData.poster_path ? `https://image.tmdb.org/t/p/w500${filmData.poster_path}` : '',
-      description: (filmData.overview || '').slice(0, 1000),
+      year: filmData.release_date ? new Date(filmData.release_date).getFullYear() : null,
+      poster: posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : '',
+      description: (filmData.overview || enData.overview || '').slice(0, 1000),
       genres: filmData.genres?.map(g => g.name) || [],
       director: filmData.credits?.crew?.find(c => c.job === 'Director')?.name || 'Неизвестен',
       actors: filmData.credits?.cast?.slice(0, 5).map(a => a.name) || [],
@@ -1200,8 +1207,6 @@ app.post('/api/films/import', [
     const points = req.isAdmin ? 5 : 2;
     await addPoints(req.userId, req.userId, 'import', points, film._id);
     await createEvent('film_add', req.user.nickname, film.title, film._id);
-    
-    // Обновляем достижения (для "Меценат")
     await updateAchievements(req.userId);
 
     res.status(201).json({
