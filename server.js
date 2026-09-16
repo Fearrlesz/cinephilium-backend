@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -91,31 +92,58 @@ const filmSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
-/* === БЛОК S1: Новая схема Rating === */
+/* === БЛОК S1: Схема Rating (Синефилиум 2.0) ===
+   - критерии и вайб: 1–10
+   - technicalScore и combinedScore: 10–100
+*/
 const ratingSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
   genrePreset: { type: String, default: null },
   blockWeights: {
-    scenario: Number, characters: Number, visual: Number,
-    sound: Number, style: Number
+    scenario:   Number,
+    characters: Number,
+    visual:     Number,
+    sound:      Number,
+    style:      Number
   },
   scores: {
-    scenario:   { plot: Number, ideas: Number, dialogue: Number },
-    characters: { depth: Number, chemistry: Number, functionality: Number },
-    visual:     { composition: Number, cinematography: Number, pacing: Number, tone: Number },
-    sound:      { music: Number, design: Number, narrative: Number },
-    style:      { originality: Number, boldness: Number }
+    scenario: {
+      plot:     { type: Number, min: 1, max: 10, required: true },
+      ideas:    { type: Number, min: 1, max: 10, required: true },
+      dialogue: { type: Number, min: 1, max: 10, required: true }
+    },
+    characters: {
+      depth:         { type: Number, min: 1, max: 10, required: true },
+      chemistry:     { type: Number, min: 1, max: 10, required: true },
+      functionality: { type: Number, min: 1, max: 10, required: true }
+    },
+    visual: {
+      composition:    { type: Number, min: 1, max: 10, required: true },
+      cinematography: { type: Number, min: 1, max: 10, required: true },
+      pacing:         { type: Number, min: 1, max: 10, required: true },
+      tone:           { type: Number, min: 1, max: 10, required: true }
+    },
+    sound: {
+      music:     { type: Number, min: 1, max: 10, required: true },
+      design:    { type: Number, min: 1, max: 10, required: true },
+      narrative: { type: Number, min: 1, max: 10, required: true }
+    },
+    style: {
+      originality: { type: Number, min: 1, max: 10, required: true },
+      boldness:    { type: Number, min: 1, max: 10, required: true }
+    }
   },
-  vibe: { type: Number, min: 1, max: 10, required: true },
-  technicalScore: Number,
-  combinedScore: Number,
+  vibe:           { type: Number, min: 1, max: 10, required: true },
+  technicalScore: { type: Number, min: 10, max: 100 },
+  combinedScore:  { type: Number, min: 10, max: 100 },
   textReview: { type: String, maxlength: 2000, default: '' },
   likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
 ratingSchema.index({ userId: 1, filmId: 1 }, { unique: true });
 ratingSchema.index({ filmId: 1 });
+ratingSchema.index({ userId: 1 });
 
 // ----- КОММЕНТАРИИ -----
 const commentSchema = new mongoose.Schema({
@@ -152,12 +180,12 @@ const actionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// ----- СОБЫТИЯ (лента активности) с поддержкой достижений -----
+// ----- СОБЫТИЯ (лента активности) -----
 const eventSchema = new mongoose.Schema({
-  type: { 
-    type: String, 
-    required: true, 
-    enum: ['rating', 'review', 'comment', 'film_add', 'achievement'] 
+  type: {
+    type: String,
+    required: true,
+    enum: ['rating', 'review', 'comment', 'film_add', 'achievement']
   },
   user: { type: String, required: true },
   film: { type: String, default: '' },
@@ -169,56 +197,110 @@ const eventSchema = new mongoose.Schema({
 });
 
 // ===== ИНДЕКСЫ =====
-ratingSchema.index({ userId: 1, filmId: 1 }, { unique: true });
-ratingSchema.index({ filmId: 1 });
-ratingSchema.index({ userId: 1 });
 filmSchema.index({ title: 'text' });
 commentSchema.index({ filmId: 1, createdAt: -1 });
 actionSchema.index({ userId: 1, actorId: 1, refId: 1, type: 1 });
 eventSchema.index({ createdAt: -1 });
 
-const User = mongoose.model('User', userSchema);
-const Film = mongoose.model('Film', filmSchema);
-const Rating = mongoose.model('Rating', ratingSchema);
+const User    = mongoose.model('User', userSchema);
+const Film    = mongoose.model('Film', filmSchema);
+const Rating  = mongoose.model('Rating', ratingSchema);
 const Comment = mongoose.model('Comment', commentSchema);
-const Review = mongoose.model('Review', reviewSchema);
-const Action = mongoose.model('Action', actionSchema);
-const Event = mongoose.model('Event', eventSchema);
+const Review  = mongoose.model('Review', reviewSchema);
+const Action  = mongoose.model('Action', actionSchema);
+const Event   = mongoose.model('Event', eventSchema);
 
-/* === БЛОК S2: Конфиг и расчёт технического балла (заменяет calculateRating и константы) === */
+/* ============================================================
+   БЛОК S2: Конфиг и расчёт технического балла (Синефилиум 2.0)
+   ============================================================ */
+
+/* Критерии ВНУТРИ блока усредняются БЕЗ весов (среднее арифметическое) */
 const BLOCK_CRITERIA = {
-  scenario:   { plot: .35, ideas: .35, dialogue: .30 },
-  characters: { depth: .40, chemistry: .35, functionality: .25 },
-  visual:     { composition: .25, cinematography: .25, pacing: .25, tone: .25 },
-  sound:      { music: .40, design: .35, narrative: .25 },
-  style:      { originality: .50, boldness: .50 }
+  scenario:   ['plot', 'ideas', 'dialogue'],
+  characters: ['depth', 'chemistry', 'functionality'],
+  visual:     ['composition', 'cinematography', 'pacing', 'tone'],
+  sound:      ['music', 'design', 'narrative'],
+  style:      ['originality', 'boldness']
 };
+
+/* Веса блоков по жанрам (сумма = 100%) */
 const GENRE_PRESETS = {
-  drama:[25,20,20,15,20], action:[20,20,30,20,10], comedy:[30,30,15,15,10],
-  horror:[25,20,20,25,10], scifi_block:[25,20,25,20,10], scifi_author:[20,20,25,15,20],
-  musical:[20,20,20,30,10], biopic:[30,30,20,15,5], hybrid:null
+  drama:        [25, 20, 20, 15, 20],
+  action:       [20, 20, 30, 20, 10],
+  comedy:       [30, 30, 15, 15, 10],
+  horror:       [25, 20, 20, 25, 10],
+  scifi_block:  [25, 20, 25, 20, 10],
+  scifi_author: [20, 20, 25, 15, 20],
+  musical:      [20, 20, 20, 30, 10],
+  biopic:       [30, 30, 20, 15,  5],
+  hybrid:       null
 };
+
+/* Базовые веса «без жанра» */
+const DEFAULT_WEIGHTS_ARRAY = [30, 25, 20, 15, 10];
+
+/* Множители формулы комбинированного балла */
+const TECHNICAL_WEIGHT = 0.7; // 70% техники
+const VIBE_WEIGHT      = 3;   // 30% вайба (перевод 1–10 → 10–100)
+
 const roundTenth = n => Math.round(n * 10) / 10;
 
-function calculateTechnicalScore(scores, weights /* объект {scenario,...} */) {
+/**
+ * Технический балл (ТБ) по системе «Синефилиум 2.0».
+ * Шаг 1: среднее арифметическое критериев внутри каждого блока (1–10).
+ * Шаг 2: ТБ = (Σ блок × вес) / 100 × 10 → 10–100, округление до десятых.
+ *
+ * @param scores  { scenario: {plot, ideas, dialogue}, ... } — значения 1–10
+ * @param weights { scenario, characters, visual, sound, style } — проценты, сумма = 100
+ */
+function calculateTechnicalScore(scores, weights) {
   const blockAvgs = {};
-  for (const [block, crit] of Object.entries(BLOCK_CRITERIA)) {
-    let avg = 0;
-    for (const [name, w] of Object.entries(crit)) {
-      const v = scores[block]?.[name];
-      if (!Number.isFinite(v) || v < 1 || v > 10) throw new Error(`Некорректная оценка: ${block}.${name}`);
-      avg += v * w;
+
+  for (const [block, criteria] of Object.entries(BLOCK_CRITERIA)) {
+    let sum = 0;
+    for (const name of criteria) {
+      const v = scores?.[block]?.[name];
+      if (!Number.isFinite(v) || v < 1 || v > 10) {
+        throw new Error(`Некорректная оценка: ${block}.${name} = ${v} (нужно 1–10)`);
+      }
+      sum += v;
     }
-    blockAvgs[block] = avg;
+    blockAvgs[block] = sum / criteria.length; // 1–10
   }
-  return roundTenth(
-    blockAvgs.scenario*(weights.scenario/100) + blockAvgs.characters*(weights.characters/100) +
-    blockAvgs.visual*(weights.visual/100) + blockAvgs.sound*(weights.sound/100) +
-    blockAvgs.style*(weights.style/100)
-  ) * 10;
+
+  const weightedAvg =
+    blockAvgs.scenario   * (weights.scenario   / 100) +
+    blockAvgs.characters * (weights.characters / 100) +
+    blockAvgs.visual     * (weights.visual     / 100) +
+    blockAvgs.sound      * (weights.sound      / 100) +
+    blockAvgs.style      * (weights.style      / 100);
+
+  return roundTenth(weightedAvg * 10); // 10–100
 }
 
-// Вспомогательные функции addPoints, removePointsByAction, existsById остаются без изменений
+/* Хелпер: массив весов → объект */
+function weightsArrayToObject(arr) {
+  return {
+    scenario:   arr[0],
+    characters: arr[1],
+    visual:     arr[2],
+    sound:      arr[3],
+    style:      arr[4]
+  };
+}
+
+/* Хелпер: объект весов → массив (для нормализации) */
+function weightsObjectToArray(obj) {
+  return [
+    obj?.scenario   ?? 0,
+    obj?.characters ?? 0,
+    obj?.visual     ?? 0,
+    obj?.sound      ?? 0,
+    obj?.style      ?? 0
+  ];
+}
+
+/* ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===== */
 async function addPoints(userId, actorId, type, points, refId = null) {
   const user = await User.findById(userId);
   if (!user) return false;
@@ -242,15 +324,14 @@ async function existsById(model, id) {
   return await model.findById(id) !== null;
 }
 
-// Обновлённая функция создания события с metadata
 async function createEvent(type, user, film, filmId, score = null, contentId = null, metadata = {}) {
   try {
-    await Event.create({ 
-      type, 
-      user, 
-      film: film || '', 
-      filmId, 
-      score, 
+    await Event.create({
+      type,
+      user,
+      film: film || '',
+      filmId,
+      score,
       contentId,
       metadata
     });
@@ -259,15 +340,13 @@ async function createEvent(type, user, film, filmId, score = null, contentId = n
   }
 }
 
-// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ (универсальная функция) =====
+// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ =====
 async function updateAchievements(userId) {
   try {
-    // Получаем количество оценок, одобренных рецензий и комментариев
-    const ratingsCount = await Rating.countDocuments({ userId });
-    const reviewsCount = await Review.countDocuments({ userId, status: 'approved' });
+    const ratingsCount  = await Rating.countDocuments({ userId });
+    const reviewsCount  = await Review.countDocuments({ userId, status: 'approved' });
     const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
 
-    // Получаем все достижения пользователя с помощью утилиты
     const allPossible = await getUserAchievements(
       userId,
       mongoose.connection.db,
@@ -280,17 +359,14 @@ async function updateAchievements(userId) {
     if (!user) return;
 
     const currentAchievements = user.achievements || [];
-    // Находим новые достижения (которых ещё нет у пользователя)
     const newAchievements = allPossible.filter(a => !currentAchievements.includes(a));
 
     if (newAchievements.length > 0) {
-      // Добавляем новые достижения
       const updatedAchievements = [...currentAchievements, ...newAchievements];
       await User.findByIdAndUpdate(userId, { achievements: updatedAchievements });
 
       console.log(`🎮 Пользователь ${user.nickname} получил новые достижения: ${newAchievements.join(', ')}`);
 
-      // Создаём событие о достижении
       await createEvent(
         'achievement',
         user.nickname,
@@ -359,7 +435,10 @@ app.post('/api/auth/register', [
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({
       token,
-      user: { id: user._id, email: user.email, nickname: user.nickname, isAdmin: user.isAdmin, totalPoints: user.totalPoints }
+      user: {
+        id: user._id, email: user.email, nickname: user.nickname,
+        isAdmin: user.isAdmin, totalPoints: user.totalPoints
+      }
     });
   } catch (error) {
     console.error('Ошибка регистрации:', error);
@@ -385,7 +464,10 @@ app.post('/api/auth/login', [
     const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({
       token,
-      user: { id: user._id, email: user.email, nickname: user.nickname, isAdmin: user.isAdmin, totalPoints: user.totalPoints }
+      user: {
+        id: user._id, email: user.email, nickname: user.nickname,
+        isAdmin: user.isAdmin, totalPoints: user.totalPoints
+      }
     });
   } catch (error) {
     console.error('Ошибка входа:', error);
@@ -406,7 +488,7 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 // ФИЛЬМЫ
 // ============================================================
 
-/* === БЛОК S4: GET /api/films/:id с тремя средними === */
+/* === БЛОК S4: GET /api/films/:id — с тремя средними (ТБ / Вайб / Комбо) === */
 app.get('/api/films/:id', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -417,22 +499,23 @@ app.get('/api/films/:id', [
     const film = await Film.findById(req.params.id);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
-    // Агрегация с тремя средними
     const ratingData = await Rating.aggregate([
       { $match: { filmId: film._id } },
-      { $group: {
-        _id: null,
-        avgTechnical: { $avg: '$technicalScore' },
-        avgVibe: { $avg: '$vibe' },
-        avgCombined: { $avg: '$combinedScore' },
-        total: { $sum: 1 }
-      }}
+      {
+        $group: {
+          _id: null,
+          avgTechnical: { $avg: '$technicalScore' },
+          avgVibe:      { $avg: '$vibe' },
+          avgCombined:  { $avg: '$combinedScore' },
+          total:        { $sum: 1 }
+        }
+      }
     ]);
 
     const avgTechnical = ratingData[0]?.avgTechnical || 0;
-    const avgVibe = ratingData[0]?.avgVibe || 0;
-    const avgCombined = ratingData[0]?.avgCombined || 0;
-    const votesCount = ratingData[0]?.total || 0;
+    const avgVibe      = ratingData[0]?.avgVibe      || 0;
+    const avgCombined  = ratingData[0]?.avgCombined  || 0;
+    const votesCount   = ratingData[0]?.total        || 0;
 
     let userRating = null;
     const token = req.headers.authorization?.split(' ')[1];
@@ -440,14 +523,14 @@ app.get('/api/films/:id', [
       try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
-      } catch (e) {}
+      } catch (e) { /* игнор */ }
     }
 
     res.json({
       ...film.toObject(),
-      averageRating: avgTechnical,    // ТБ — основной рейтинг
-      averageVibe: avgVibe,           // 💫 средний вайб
-      averageCombined: avgCombined,   // комбинированный
+      averageRating:   roundTenth(avgTechnical),  // ТБ — основной рейтинг
+      averageVibe:     roundTenth(avgVibe),       // 💫 средний вайб
+      averageCombined: roundTenth(avgCombined),   // ⭐ комбинированный
       votesCount,
       userRating
     });
@@ -461,18 +544,11 @@ app.get('/api/films/:id', [
 app.get('/api/films/search-by-title', async (req, res) => {
   try {
     const title = req.query.title;
-    if (!title) {
-      return res.status(400).json({ error: 'Название фильма не указано' });
-    }
+    if (!title) return res.status(400).json({ error: 'Название фильма не указано' });
 
     let film = await Film.findOne({ title: title });
-    if (!film) {
-      film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
-    }
-
-    if (!film) {
-      return res.status(404).json({ error: 'Фильм не найден' });
-    }
+    if (!film) film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
+    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
     res.json(film);
   } catch (error) {
@@ -481,35 +557,37 @@ app.get('/api/films/search-by-title', async (req, res) => {
   }
 });
 
+/* === GET /api/films/:id/ratings — все оценки фильма === */
 app.get('/api/films/:id/ratings', async (req, res) => {
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
-      .populate('userId', 'nickname avatar isAdmin') // ✅ Добавь isAdmin
-      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores finalScore') // ✅ Добавь finalScore
+      .populate('userId', 'nickname avatar isAdmin')
+      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
       .sort({ createdAt: -1 });
-    
+
     const formattedRatings = ratings.map(r => ({
       rating: {
-        _id: r._id,
-        finalScore: r.finalScore, // ✅ Добавлено
+        _id:            r._id,
         technicalScore: r.technicalScore,
-        combinedScore: r.combinedScore,
-        vibe: r.vibe,
-        textReview: r.textReview,
-        likes: r.likes,
-        createdAt: r.createdAt,
-        genrePreset: r.genrePreset,
-        blockWeights: r.blockWeights,
-        scores: r.scores
+        combinedScore:  r.combinedScore,
+        // алиас для обратной совместимости с фронтом
+        finalScore:     r.combinedScore,
+        vibe:           r.vibe,
+        textReview:     r.textReview,
+        likes:          r.likes,
+        createdAt:      r.createdAt,
+        genrePreset:    r.genrePreset,
+        blockWeights:   r.blockWeights,
+        scores:         r.scores
       },
       user: {
-        _id: r.userId?._id,
+        _id:     r.userId?._id,
         nickname: r.userId?.nickname || 'Пользователь',
-        avatar: r.userId?.avatar,
-        isAdmin: r.userId?.isAdmin || false // ✅ Добавлено
+        avatar:  r.userId?.avatar,
+        isAdmin: r.userId?.isAdmin || false
       }
     }));
-    
+
     res.json(formattedRatings);
   } catch (err) {
     console.error('Ошибка загрузки оценок:', err);
@@ -517,28 +595,28 @@ app.get('/api/films/:id/ratings', async (req, res) => {
   }
 });
 
-// Новый эндпоинт для получения пользователей с их оценками (лёгкая версия)
+/* === Лёгкий список пользователей с их оценками === */
 app.get('/api/films/:id/users', async (req, res) => {
   try {
     const filmId = req.params.id;
 
-    // Запрашиваем только те поля, которые нужны для списка
     const ratings = await Rating.find({ filmId })
-      .populate('userId', 'nickname isAdmin') // avatar не нужен, если не используется в UI
-      .select('combinedScore technicalScore') // берём только то, из чего получим finalScore
-      .lean(); // для производительности
+      .populate('userId', 'nickname isAdmin')
+      .select('combinedScore technicalScore')
+      .lean();
 
-    // Трансформируем в ожидаемый фронтендом формат
     const result = ratings.map(r => ({
       user: {
-        _id: r.userId._id,
-        nickname: r.userId.nickname,
-        isAdmin: r.userId.isAdmin || false,
+        _id:     r.userId?._id,
+        nickname: r.userId?.nickname || 'Пользователь',
+        isAdmin: r.userId?.isAdmin || false
       },
       rating: {
-        _id: r._id,
-        finalScore: r.combinedScore ?? r.technicalScore ?? 0, // приоритет combinedScore
-      },
+        _id:        r._id,
+        finalScore: r.combinedScore ?? r.technicalScore ?? 0,
+        technicalScore: r.technicalScore,
+        combinedScore:  r.combinedScore
+      }
     }));
 
     res.json(result);
@@ -548,30 +626,22 @@ app.get('/api/films/:id/users', async (req, res) => {
   }
 });
 
-/* === БЛОК S6: GET /api/films — список фильмов с сортировкой === */
+/* === БЛОК S6: GET /api/films — сортировка по ТБ / вайбу / комбо === */
 app.get('/api/films', async (req, res) => {
   try {
-    const sort = req.query.sort || 'technical';
-    const page = parseInt(req.query.page) || 1;
+    const sort  = req.query.sort || 'technical';
+    const page  = parseInt(req.query.page)  || 1;
     const limit = parseInt(req.query.limit) || 20;
-    const skip = (page - 1) * limit;
+    const skip  = (page - 1) * limit;
 
-    // Определяем поле сортировки
     let sortField;
     switch (sort) {
-      case 'combined':
-        sortField = 'averageCombined';
-        break;
-      case 'vibe':
-        sortField = 'averageVibe';
-        break;
+      case 'combined': sortField = 'averageCombined'; break;
+      case 'vibe':     sortField = 'averageVibe';     break;
       case 'technical':
-      default:
-        sortField = 'averageRating';
-        break;
+      default:         sortField = 'averageRating';   break;
     }
 
-    // Агрегация фильмов с их рейтингами
     const films = await Film.aggregate([
       {
         $lookup: {
@@ -583,29 +653,18 @@ app.get('/api/films', async (req, res) => {
       },
       {
         $addFields: {
-          averageRating: { $avg: '$ratings.technicalScore' },
-          averageVibe: { $avg: '$ratings.vibe' },
+          averageRating:   { $avg: '$ratings.technicalScore' },
+          averageVibe:     { $avg: '$ratings.vibe' },
           averageCombined: { $avg: '$ratings.combinedScore' },
-          votesCount: { $size: '$ratings' }
+          votesCount:      { $size: '$ratings' }
         }
       },
-      {
-        $project: {
-          ratings: 0  // убираем массив оценок из результата
-        }
-      },
-      {
-        $sort: { [sortField]: -1 }  // по убыванию (desc)
-      },
-      {
-        $skip: skip
-      },
-      {
-        $limit: limit
-      }
+      { $project: { ratings: 0 } },
+      { $sort: { [sortField]: -1 } },
+      { $skip: skip },
+      { $limit: limit }
     ]);
 
-    // Получаем общее количество фильмов для пагинации
     const total = await Film.countDocuments();
 
     res.json({
@@ -672,7 +731,7 @@ app.get('/api/comments/:filmId', [
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
-      } catch (e) {}
+      } catch (e) { /* игнор */ }
     }
 
     const statusFilter = isAdmin ? {} : { status: 'approved' };
@@ -705,7 +764,6 @@ app.get('/api/comments/:filmId', [
   }
 });
 
-// ===== ЛАЙК КОММЕНТАРИЯ =====
 app.post('/api/comments/:id/like', [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
@@ -719,7 +777,6 @@ app.post('/api/comments/:id/like', [
     if (comment.userId.equals(req.userId)) {
       return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
-
     if (comment.likes.includes(req.userId)) {
       return res.status(400).json({ error: 'Вы уже лайкнули этот комментарий' });
     }
@@ -729,8 +786,6 @@ app.post('/api/comments/:id/like', [
 
     const points = req.isAdmin ? 3 : 1;
     await addPoints(comment.userId, req.userId, 'like', points, comment._id);
-    
-    // Обновляем достижения автора комментария (получает лайки)
     await updateAchievements(comment.userId);
 
     res.json({ liked: true, likes: comment.likes.length });
@@ -792,7 +847,7 @@ app.get('/api/reviews/:filmId', [
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
-      } catch (e) {}
+      } catch (e) { /* игнор */ }
     }
 
     const statusFilter = isAdmin ? {} : { status: 'approved' };
@@ -804,6 +859,7 @@ app.get('/api/reviews/:filmId', [
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
       .sort({ createdAt: -1 });
+
     res.json(reviews);
   } catch (error) {
     console.error('Ошибка загрузки рецензий:', error);
@@ -830,7 +886,6 @@ app.get('/api/reviews/details/:id', [
   }
 });
 
-// ===== ЛАЙК РЕЦЕНЗИИ =====
 app.post('/api/reviews/:id/like', [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
@@ -844,7 +899,6 @@ app.post('/api/reviews/:id/like', [
     if (review.userId.equals(req.userId)) {
       return res.status(400).json({ error: 'Нельзя лайкать себя' });
     }
-
     if (review.likes.includes(req.userId)) {
       return res.status(400).json({ error: 'Вы уже лайкнули эту рецензию' });
     }
@@ -854,8 +908,6 @@ app.post('/api/reviews/:id/like', [
 
     const points = req.isAdmin ? 20 : 5;
     await addPoints(review.userId, req.userId, 'like', points, review._id);
-    
-    // Обновляем достижения автора рецензии
     await updateAchievements(review.userId);
 
     res.json({ liked: true, likes: review.likes.length });
@@ -876,30 +928,9 @@ app.get('/api/top/users', async (req, res) => {
       { $project: { password: 0 } },
       { $sort: { totalPoints: -1 } },
       { $limit: limit },
-      {
-        $lookup: {
-          from: 'ratings',
-          localField: '_id',
-          foreignField: 'userId',
-          as: 'ratings'
-        }
-      },
-      {
-        $lookup: {
-          from: 'reviews',
-          localField: '_id',
-          foreignField: 'userId',
-          as: 'reviews'
-        }
-      },
-      {
-        $lookup: {
-          from: 'comments',
-          localField: '_id',
-          foreignField: 'userId',
-          as: 'comments'
-        }
-      },
+      { $lookup: { from: 'ratings',  localField: '_id', foreignField: 'userId', as: 'ratings' } },
+      { $lookup: { from: 'reviews',  localField: '_id', foreignField: 'userId', as: 'reviews' } },
+      { $lookup: { from: 'comments', localField: '_id', foreignField: 'userId', as: 'comments' } },
       {
         $lookup: {
           from: 'actions',
@@ -912,10 +943,10 @@ app.get('/api/top/users', async (req, res) => {
       },
       {
         $addFields: {
-          ratingsCount: { $size: '$ratings' },
-          reviewsCount: { $size: '$reviews' },
-          commentsCount: { $size: '$comments' },
-          likesReceived: { $size: '$likesReceived' }
+          ratingsCount:   { $size: '$ratings' },
+          reviewsCount:   { $size: '$reviews' },
+          commentsCount:  { $size: '$comments' },
+          likesReceived:  { $size: '$likesReceived' }
         }
       },
       { $project: { ratings: 0, reviews: 0, comments: 0, likesReceived: 0 } }
@@ -928,78 +959,88 @@ app.get('/api/top/users', async (req, res) => {
   }
 });
 
+// ============================================================
+// ОЦЕНКИ (Синефилиум 2.0)
+// ============================================================
 
-/* === БЛОК S3: POST /api/ratings (исправленный) === */
+/* === БЛОК S3: POST /api/ratings === */
 app.post('/api/ratings', authenticate, async (req, res) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
-    // Валидация filmId
-    if (!filmId) return res.status(400).json({ message: 'filmId обязателен' });
+    // --- filmId ---
+    if (!filmId || !mongoose.Types.ObjectId.isValid(filmId)) {
+      return res.status(400).json({ message: 'Некорректный filmId' });
+    }
 
-    // Валидация scores (базовая проверка структуры)
+    // --- scores ---
     if (!scores || typeof scores !== 'object') {
       return res.status(400).json({ message: 'scores обязателен и должен быть объектом' });
     }
-    // Проверка каждого блока и критерия (опционально, можно расширить)
-    const requiredBlocks = ['scenario', 'characters', 'visual', 'sound', 'style'];
-    const requiredCriteria = {
-      scenario: ['plot', 'ideas', 'dialogue'],
-      characters: ['depth', 'chemistry', 'functionality'],
-      visual: ['composition', 'cinematography', 'pacing', 'tone'],
-      sound: ['music', 'design', 'narrative'],
-      style: ['originality', 'boldness']
-    };
-    for (const block of requiredBlocks) {
+
+    for (const [block, crits] of Object.entries(BLOCK_CRITERIA)) {
       if (!scores[block] || typeof scores[block] !== 'object') {
         return res.status(400).json({ message: `Блок ${block} отсутствует или некорректен` });
       }
-      for (const crit of requiredCriteria[block]) {
+      for (const crit of crits) {
         const val = scores[block][crit];
         if (!Number.isFinite(val) || val < 1 || val > 10) {
-          return res.status(400).json({ message: `Некорректное значение ${block}.${crit}` });
+          return res.status(400).json({
+            message: `Некорректное значение ${block}.${crit} (нужно 1–10)`
+          });
         }
       }
     }
 
-    // Валидация vibe
+    // --- vibe ---
     if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
       return res.status(400).json({ message: 'vibe должен быть от 1 до 10' });
     }
 
-    // Выбор весов
+    // --- веса ---
     let weightsArray;
+
     if (genrePreset && GENRE_PRESETS[genrePreset] && genrePreset !== 'hybrid') {
       weightsArray = GENRE_PRESETS[genrePreset];
-    } else if (blockWeights) {
-      if (!Array.isArray(blockWeights) || blockWeights.length !== 5) {
-        return res.status(400).json({ message: 'blockWeights должен быть массивом из 5 чисел' });
-      }
+    } else if (Array.isArray(blockWeights) && blockWeights.length === 5) {
       const allValid = blockWeights.every(w => Number.isFinite(w) && w >= 0 && w <= 100);
-      const sum = blockWeights.reduce((a,b)=>a+b,0);
+      const sum = blockWeights.reduce((a, b) => a + b, 0);
       if (!allValid || sum !== 100) {
         return res.status(400).json({ message: 'Сумма весов блоков должна быть строго 100' });
       }
       weightsArray = blockWeights;
+    } else if (blockWeights && typeof blockWeights === 'object') {
+      const arr = weightsObjectToArray(blockWeights);
+      const allValid = arr.every(w => Number.isFinite(w) && w >= 0 && w <= 100);
+      const sum = arr.reduce((a, b) => a + b, 0);
+      if (!allValid || sum !== 100) {
+        return res.status(400).json({ message: 'Сумма весов блоков должна быть строго 100' });
+      }
+      weightsArray = arr;
     } else {
-      weightsArray = [30,25,20,15,10];
+      weightsArray = DEFAULT_WEIGHTS_ARRAY;
     }
-    const weights = {
-      scenario: weightsArray[0], characters: weightsArray[1], visual: weightsArray[2],
-      sound: weightsArray[3], style: weightsArray[4]
-    };
 
-    const technicalScore = calculateTechnicalScore(scores, weights);
-    const combinedScore = roundTenth(technicalScore * 0.7 + vibe * 3);
+    const weights = weightsArrayToObject(weightsArray);
 
+    // --- расчёт ТБ и комбинированного ---
+    let technicalScore;
+    try {
+      technicalScore = calculateTechnicalScore(scores, weights);
+    } catch (e) {
+      return res.status(400).json({ message: e.message });
+    }
+    const combinedScore = roundTenth(technicalScore * TECHNICAL_WEIGHT + vibe * VIBE_WEIGHT);
+
+    // --- фильм ---
     const film = await Film.findById(filmId);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
-    // Проверяем наличие существующей оценки
+    // --- есть ли уже оценка ---
     const existingRating = await Rating.findOne({ userId: req.userId, filmId });
     const isNew = !existingRating;
 
-    // Сохраняем (создаём или обновляем)
+    // --- сохранение ---
     const rating = await Rating.findOneAndUpdate(
       { userId: req.userId, filmId },
       {
@@ -1013,35 +1054,48 @@ app.post('/api/ratings', authenticate, async (req, res) => {
           textReview: textReview || ''
         }
       },
-      { upsert: true, new: true }
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     );
 
-    // Если оценка новая – начисляем очки и создаём событие
+    // --- награды при первой оценке ---
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
-      
-      // Получаем ник пользователя (если не передан в req.user)
+
       const user = await User.findById(req.userId);
       const nickname = user?.nickname || 'Пользователь';
-      
-      // Создаём событие с combinedScore
-      await createEvent('rating', nickname, film.title, film._id, rating.combinedScore, rating._id);
 
-      // Обновляем достижения (если функция есть)
+      await createEvent(
+        'rating',
+        nickname,
+        film.title,
+        film._id,
+        rating.combinedScore,
+        rating._id,
+        {
+          technicalScore: rating.technicalScore,
+          combinedScore:  rating.combinedScore,
+          vibe:           rating.vibe
+        }
+      );
+
       if (typeof updateAchievements === 'function') {
         await updateAchievements(req.userId);
       }
     }
 
-    // Ответ: finalScore оставляем для совместимости, но можно вернуть и combinedScore
-    res.status(201).json({ rating, technicalScore, finalScore: technicalScore, combinedScore });
+    res.status(201).json({
+      rating,
+      technicalScore,
+      combinedScore,
+      vibe,
+      finalScore: combinedScore // алиас для обратной совместимости
+    });
   } catch (err) {
     console.error('Ошибка сохранения оценки:', err);
     res.status(500).json({ message: 'Ошибка сервера' });
   }
 });
-
 
 app.get('/api/ratings/user', authenticate, async (req, res) => {
   try {
@@ -1089,7 +1143,6 @@ app.post('/api/admin/make', [
     if (!adminSecret) {
       return res.status(500).json({ error: 'Секретный ключ не настроен на сервере' });
     }
-
     if (secretKey !== adminSecret) {
       return res.status(403).json({ error: 'Неверный секретный ключ' });
     }
@@ -1133,9 +1186,7 @@ app.get('/api/tmdb/search', async (req, res) => {
     const response = await fetch(
       `https://api.themoviedb.org/3/search/movie?api_key=${apiKey}&query=${encodeURIComponent(query)}&language=ru-RU`
     );
-    if (!response.ok) {
-      throw new Error(`TMDB API error: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`TMDB API error: ${response.status}`);
     const data = await response.json();
     res.json(data);
   } catch (error) {
@@ -1154,22 +1205,18 @@ app.post('/api/films/import', [
     const { tmdbId } = req.body;
     const apiKey = process.env.TMDB_API_KEY;
 
-    // ✅ Два запроса параллельно: RU для метаданных, EN как фолбэк для постера
     const [ruResponse, enResponse] = await Promise.all([
       fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`),
       fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=en-US`)
     ]);
 
-    if (!ruResponse.ok) {
-      throw new Error(`TMDB API error (ru): ${ruResponse.status}`);
-    }
+    if (!ruResponse.ok) throw new Error(`TMDB API error (ru): ${ruResponse.status}`);
 
     const filmData = await ruResponse.json();
     const enData = enResponse.ok ? await enResponse.json() : {};
 
     if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
 
-    // ✅ Берём постер: сначала русский, потом английский, иначе пусто
     const posterPath = filmData.poster_path || enData.poster_path || null;
 
     const filmDataForSave = {
@@ -1188,12 +1235,10 @@ app.post('/api/films/import', [
     };
 
     let film = await Film.findOne({ tmdbId: filmData.id });
-    let isNew = false;
 
     if (!film) {
       film = new Film(filmDataForSave);
       await film.save();
-      isNew = true;
     } else {
       await Film.findOneAndUpdate({ tmdbId: filmData.id }, filmDataForSave);
       const updatedFilm = await Film.findOne({ tmdbId: filmData.id });
@@ -1221,17 +1266,16 @@ app.post('/api/films/import', [
 });
 
 // ============================================================
-// ПРОКСИ ДЛЯ ПОСТЕРОВ TMDB (обход блокировки image.tmdb.org)
+// ПРОКСИ ДЛЯ ПОСТЕРОВ TMDB
 // ============================================================
 app.get('/api/poster/*', async (req, res) => {
-  const path = req.params[0]; // например "w500/abc.jpg"
+  const path = req.params[0];
   if (!path || path.includes('..')) return res.status(400).end();
 
   try {
     const r = await fetch(`https://image.tmdb.org/t/p/${path}`);
     if (!r.ok) return res.status(404).end();
 
-    // Кэшируем на неделю — браузер пользователя не будет дёргать бэкенд каждый раз
     res.set('Cache-Control', 'public, max-age=604800, immutable');
     res.set('Content-Type', r.headers.get('content-type') || 'image/jpeg');
 
@@ -1244,7 +1288,7 @@ app.get('/api/poster/*', async (req, res) => {
 });
 
 // ============================================================
-// ПОЛЬЗОВАТЕЛИ (включая достижения)
+// ПОЛЬЗОВАТЕЛИ
 // ============================================================
 
 app.get('/api/users/:id', [
@@ -1258,8 +1302,8 @@ app.get('/api/users/:id', [
     const user = await User.findById(userId).select('-password');
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-    const ratings = await Rating.find({ userId }).populate('filmId', 'title poster year');
-    const reviews = await Review.find({ userId }).populate('filmId', 'title poster');
+    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
+    const reviews  = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
     const isOwnProfile = req.headers.authorization?.split(' ')[1] ?
@@ -1281,17 +1325,19 @@ app.get('/api/users/:id', [
         achievements: user.achievements || [],
         email: isOwnProfile ? user.email : undefined
       },
-      /* === БЛОК S5: Профиль пользователя (замена ratings) === */
-ratings: ratings.map(r => ({
-  id: r._id,
-  film: r.filmId,
-  technicalScore: r.technicalScore,
-  combinedScore: r.combinedScore,
-  vibe: r.vibe,
-  genrePreset: r.genrePreset,
-  scores: r.scores,
-  textReview: r.textReview
-})),
+      /* === БЛОК S5: Профиль пользователя === */
+      ratings: ratings.map(r => ({
+        id: r._id,
+        film: r.filmId,
+        technicalScore: r.technicalScore,
+        combinedScore:  r.combinedScore,
+        vibe:           r.vibe,
+        genrePreset:    r.genrePreset,
+        blockWeights:   r.blockWeights,
+        scores:         r.scores,
+        textReview:     r.textReview,
+        createdAt:      r.createdAt
+      })),
       reviews: reviews.map(r => ({
         id: r._id,
         film: r.filmId,
@@ -1311,7 +1357,6 @@ ratings: ratings.map(r => ({
   }
 });
 
-// ===== НОВЫЙ ЭНДПОИНТ: ДОСТИЖЕНИЯ И ПРОГРЕСС =====
 app.get('/api/users/:id/achievements', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -1320,12 +1365,10 @@ app.get('/api/users/:id/achievements', [
     const user = await User.findById(userId).select('achievements nickname');
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-    // Получаем количество оценок, рецензий, комментариев
-    const ratingsCount = await Rating.countDocuments({ userId });
-    const reviewsCount = await Review.countDocuments({ userId, status: 'approved' });
+    const ratingsCount  = await Rating.countDocuments({ userId });
+    const reviewsCount  = await Review.countDocuments({ userId, status: 'approved' });
     const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
 
-    // Получаем все возможные достижения для этого пользователя
     const allPossible = await getUserAchievements(
       userId,
       mongoose.connection.db,
@@ -1378,14 +1421,13 @@ app.get('/api/admin/pending/reviews', authenticate, isAdmin, async (req, res) =>
   }
 });
 
-// ----- ОДОБРЕНИЕ КОММЕНТАРИЯ -----
 app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const comment = await Comment.findByIdAndUpdate(
       req.params.id,
       { status: 'approved' },
       { new: true }
-    ).populate('userId', 'nickname').populate('filmId', 'title');
+    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
 
     if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
 
@@ -1393,8 +1435,7 @@ app.put('/api/admin/comments/:id/approve', authenticate, isAdmin, async (req, re
     const authorPoints = authorIsAdmin ? 10 : 2;
     await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
     await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
-    
-    // Обновляем достижения автора комментария
+
     await updateAchievements(comment.userId._id);
 
     res.json(comment);
@@ -1419,14 +1460,13 @@ app.put('/api/admin/comments/:id/reject', authenticate, isAdmin, async (req, res
   }
 });
 
-// ----- ОДОБРЕНИЕ РЕЦЕНЗИИ -----
 app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
   try {
     const review = await Review.findByIdAndUpdate(
       req.params.id,
       { status: 'approved' },
       { new: true }
-    ).populate('userId', 'nickname').populate('filmId', 'title');
+    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
 
     if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
 
@@ -1434,8 +1474,7 @@ app.put('/api/admin/reviews/:id/approve', authenticate, isAdmin, async (req, res
     const authorPoints = authorIsAdmin ? 50 : 30;
     await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
     await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
-    
-    // Обновляем достижения автора рецензии
+
     await updateAchievements(review.userId._id);
 
     res.json(review);
