@@ -660,7 +660,7 @@ app.get('/api/films', async (req, res) => {
         }
       },
       { $project: { ratings: 0 } },
-      { $sort: { [sortField]: -1 } },
+      { $sort: { [sortField]: -1, _id: 1 } }, 
       { $skip: skip },
       { $limit: limit }
     ]);
