@@ -6,6 +6,8 @@ const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
+// ===== ЭКСКЛЮЗИВНЫЙ ПОЛЬЗОВАТЕЛЬ =====
+const EXCLUSIVE_NICKNAME = 'Дмитрий';
 
 // ===== ПОДКЛЮЧЕНИЕ ДОСТИЖЕНИЙ =====
 const { getUserAchievements } = require('./utils/achievements');
@@ -478,7 +480,14 @@ app.post('/api/auth/login', [
 app.get('/api/auth/me', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('-password');
-    res.json(user);
+    
+    // Добавляем флаг эксклюзивности
+    const isExclusive = user.nickname === EXCLUSIVE_NICKNAME;
+
+    res.json({
+      ...user.toObject(), // Разворачиваем документ Mongoose
+      isExclusive
+    });
   } catch (error) {
     res.status(500).json({ error: 'Внутренняя ошибка сервера' });
   }
@@ -1372,8 +1381,21 @@ app.get('/api/users/:id', [
         isAdmin: user.isAdmin,
         totalPoints: user.totalPoints,
         achievements: user.achievements || [],
-        email: isOwnProfile ? user.email : undefined
+        email: isOwnProfile ? user.email : undefined,
+        // 👇 ДОБАВЛЯЕМ ЭТУ СТРОКУ
+        isExclusive: user.nickname === EXCLUSIVE_NICKNAME
       },
+      ratings: ratings.map(r => ({
+        // ... твой код ratings
+      })),
+      reviews: reviews.map(r => ({
+        // ... твой код reviews
+      })),
+      comments: comments.map(c => ({
+        // ... твой код comments
+      }))
+    });
+    
       /* === БЛОК S5: Профиль пользователя === */
       ratings: ratings.map(r => ({
         id: r._id,
