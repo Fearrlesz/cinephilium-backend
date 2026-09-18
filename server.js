@@ -484,6 +484,55 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
   }
 });
 
+/* === ТОП ПО ВЫБРАННОЙ МЕТРИКЕ === */
+app.get('/api/films/top', async (req, res) => {
+  try {
+    const sort  = req.query.sort || 'technical';
+    const limit = Math.min(parseInt(req.query.limit) || 5, 20);
+
+    const sortField =
+      sort === 'combined' ? 'averageCombined' :
+      sort === 'vibe'     ? 'averageVibe'     :
+                            'averageRating';
+
+    const films = await Film.aggregate([
+      {
+        $lookup: {
+          from: 'ratings',
+          localField: '_id',
+          foreignField: 'filmId',
+          as: 'ratings'
+        }
+      },
+      {
+        $addFields: {
+          averageRating:   { $avg: '$ratings.technicalScore' },
+          averageVibe:     { $avg: '$ratings.vibe' },
+          averageCombined: { $avg: '$ratings.combinedScore' },
+          votesCount:      { $size: '$ratings' },
+          // защита от null при сортировке
+          _sortKey: { $ifNull: [{ $avg: `$ratings.${
+            sortField === 'averageCombined' ? 'combinedScore' :
+            sortField === 'averageVibe'     ? 'vibe' :
+                                              'technicalScore'
+          }` }, -1] }
+        }
+      },
+      // фильмы без оценок в топ не пускаем
+      { $match: { _sortKey: { $gt: 0 } } },
+      { $project: { ratings: 0, _sortKey: 0 } },
+      // тай-брейкер по количеству оценок и _id, чтобы топ не «дрожал»
+      { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
+      { $limit: limit }
+    ]);
+
+    res.json({ films, sort: sortField, limit });
+  } catch (error) {
+    console.error('Ошибка загрузки топа:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ============================================================
 // ФИЛЬМЫ
 // ============================================================
