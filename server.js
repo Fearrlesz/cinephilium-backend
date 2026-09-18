@@ -1364,13 +1364,14 @@ app.get('/api/users/:id', [
     const reviews  = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
-    const isOwnProfile = req.headers.authorization?.split(' ')[1] ?
-      (() => {
-        try {
-          const decoded = jwt.verify(req.headers.authorization.split(' ')[1], process.env.JWT_SECRET);
-          return decoded.userId === userId;
-        } catch { return false; }
-      })() : false;
+    let isOwnProfile = false;
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        isOwnProfile = decoded.userId === userId;
+      } catch { /* игнор */ }
+    }
 
     res.json({
       user: {
@@ -1382,20 +1383,8 @@ app.get('/api/users/:id', [
         totalPoints: user.totalPoints,
         achievements: user.achievements || [],
         email: isOwnProfile ? user.email : undefined,
-        // 👇 ДОБАВЛЯЕМ ЭТУ СТРОКУ
         isExclusive: user.nickname === EXCLUSIVE_NICKNAME
       },
-      ratings: ratings.map(r => ({
-        // ... твой код ratings
-      })),
-      reviews: reviews.map(r => ({
-        // ... твой код reviews
-      })),
-      comments: comments.map(c => ({
-        // ... твой код comments
-      }))
-    });
-    
       /* === БЛОК S5: Профиль пользователя === */
       ratings: ratings.map(r => ({
         id: r._id,
