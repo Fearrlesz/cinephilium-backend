@@ -1345,6 +1345,23 @@ app.get('/api/poster/*', async (req, res) => {
   }
 });
 
+/* === ПОЛУЧИТЬ ЮЗЕРА ПО НИКУ === */
+app.get('/api/users/nickname/:nickname', async (req, res) => {
+  try {
+    const user = await User.findOne({ nickname: req.params.nickname }).select('-password');
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    res.json({
+      _id: user._id,
+      nickname: user.nickname,
+      avatar: user.avatar,
+      isExclusive: user.nickname === EXCLUSIVE_NICKNAME
+    });
+  } catch (error) {
+    console.error('Ошибка поиска по нику:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
+});
+
 // ============================================================
 // ПОЛЬЗОВАТЕЛИ
 // ============================================================
