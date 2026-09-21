@@ -15,6 +15,9 @@ const ACHIEVEMENTS = {
   REVIEW_5: '✍️ Мастер слова',
   FIRST_COMMENT: '💬 Первое слово',
   COMMENT_10: '🗣️ Активный зритель',
+  
+  // НОВОЕ ДОСТИЖЕНИЕ
+  FIRST_FRAME: '🎬 Первый кадр',
 };
 
 // ============================================================
@@ -47,6 +50,7 @@ async function getSpecialAchievements(userId, db) {
   const ratingsCollection = db.collection('ratings');
   const commentsCollection = db.collection('comments');
   const filmsCollection = db.collection('films');
+  const usersCollection = db.collection('users'); // Добавили коллекцию пользователей
 
   // --- Высокие оценки (80+) ---
   const highRatings = await ratingsCollection
@@ -70,6 +74,23 @@ async function getSpecialAchievements(userId, db) {
   // --- Добавленные фильмы ---
   const importedFilms = await filmsCollection.countDocuments({ createdBy: userId });
   if (importedFilms >= 1) earned.push('🎪 Меценат');
+
+  // --- 🎬 ПЕРВЫЙ КАДР (для первых 100 пользователей) ---
+  // Находим первых 100 пользователей, отсортированных по _id (обычно это порядок регистрации)
+  const firstHundredUsers = await usersCollection
+    .find({}, { projection: { _id: 1 } })
+    .sort({ _id: 1 }) 
+    .limit(100)
+    .toArray();
+
+  // Проверяем, входит ли текущий пользователь в этот список
+  const isFirstHundred = firstHundredUsers.some(
+    (u) => u._id.toString() === userId.toString()
+  );
+
+  if (isFirstHundred) {
+    earned.push(ACHIEVEMENTS.FIRST_FRAME);
+  }
 
   return earned;
 }
