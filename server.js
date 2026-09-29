@@ -1,11 +1,11 @@
-
 require('dotenv').config();
-const express = require('express'); 
+const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
+
 // ===== ЭКСКЛЮЗИВНЫЙ ПОЛЬЗОВАТЕЛЬ =====
 const EXCLUSIVE_NICKNAME = 'Дмитрий';
 
@@ -56,6 +56,37 @@ console.log('✅ Все переменные окружения заданы');
 
 // ===== ПОДКЛЮЧЕНИЕ К БАЗЕ =====
 mongoose.set('strictQuery', false);
+
+// ============================================================
+// МИДДЛВАРЫ
+// (перенесены наверх, чтобы не было TDZ: validateObjectId используется
+//  в маршрутах, которые были объявлены раньше своего определения)
+// ============================================================
+
+const validateObjectId = (paramName) => [
+  param(paramName).isMongoId().withMessage('Неверный ID')
+];
+
+const authenticate = async (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Не авторизован' });
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.userId);
+    if (!user) return res.status(401).json({ error: 'Пользователь не найден' });
+    req.userId = user._id;
+    req.user = user;
+    req.isAdmin = user.isAdmin || false;
+    next();
+  } catch (error) {
+    res.status(401).json({ error: 'Неверный токен' });
+  }
+};
+
+const isAdmin = async (req, res, next) => {
+  if (!req.isAdmin) return res.status(403).json({ error: 'Доступ только для администратора' });
+  next();
+};
 
 // ============================================================
 // СХЕМЫ МОДЕЛЕЙ
@@ -160,55 +191,17 @@ const commentSchema = new mongoose.Schema({
 });
 
 // ----- РЕЦЕНЗИИ -----
-app.get('/api/reviews/:filmId', [
-  ...validateObjectId('filmId')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-
-  try {
-    let isAdmin = false;
-    let currentUserId = null;
-
-    const token = req.headers.authorization?.split(' ')[1];
-    if (token) {
-      try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-        currentUserId = decoded.userId;
-        const user = await User.findById(currentUserId);
-        isAdmin = user?.isAdmin || false;
-      } catch (e) { /* игнор */ }
-    }
-
-    // Админ видит всё; авторизованный — approved + свои pending;
-    // гость — только approved.
-    const query = { filmId: req.params.filmId };
-
-    if (!isAdmin) {
-      if (currentUserId) {
-        query.$or = [
-          { status: 'approved' },
-          { status: 'pending', userId: currentUserId }
-        ];
-      } else {
-        query.status = 'approved';
-      }
-    }
-
-    const reviews = await Review.find(query)
-      .populate('userId', 'nickname isAdmin avatar')
-      .populate('filmId', 'title poster')
-      .populate(
-        'ratingId',
-        'technicalScore combinedScore vibe genrePreset blockWeights scores createdAt'
-      )
-      .sort({ createdAt: -1 });
-
-    res.json(reviews);
-  } catch (error) {
-    console.error('Ошибка загрузки рецензий:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
+// (ранее схема отсутствовала, из-за чего падало `mongoose.model('Review', reviewSchema)`)
+const reviewSchema = new mongoose.Schema({
+  userId:   { type: mongoose.Schema.Types.ObjectId, ref: 'User',   required: true },
+  filmId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Film',   required: true },
+  ratingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Rating', required: true },
+  title:    { type: String, required: true, maxlength: 100 },
+  text:     { type: String, required: true, maxlength: 5000 },
+  likes:    [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  status:   { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
 });
 
 // ----- ДЕЙСТВИЯ (для топа) -----
@@ -240,6 +233,8 @@ const eventSchema = new mongoose.Schema({
 // ===== ИНДЕКСЫ =====
 filmSchema.index({ title: 'text' });
 commentSchema.index({ filmId: 1, createdAt: -1 });
+reviewSchema.index({ filmId: 1, createdAt: -1 });
+reviewSchema.index({ userId: 1, filmId: 1 }, { unique: true });
 actionSchema.index({ userId: 1, actorId: 1, refId: 1, type: 1 });
 eventSchema.index({ createdAt: -1 });
 
@@ -424,35 +419,6 @@ async function updateAchievements(userId) {
 }
 
 // ============================================================
-// МИДДЛВАРЫ
-// ============================================================
-
-const authenticate = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'Не авторизован' });
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.userId);
-    if (!user) return res.status(401).json({ error: 'Пользователь не найден' });
-    req.userId = user._id;
-    req.user = user;
-    req.isAdmin = user.isAdmin || false;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Неверный токен' });
-  }
-};
-
-const isAdmin = async (req, res, next) => {
-  if (!req.isAdmin) return res.status(403).json({ error: 'Доступ только для администратора' });
-  next();
-};
-
-const validateObjectId = (paramName) => [
-  param(paramName).isMongoId().withMessage('Неверный ID')
-];
-
-// ============================================================
 // АУТЕНТИФИКАЦИЯ
 // ============================================================
 
@@ -519,7 +485,7 @@ app.post('/api/auth/login', [
 app.get('/api/auth/me', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('-password');
-    
+
     // Добавляем флаг эксклюзивности
     const isExclusive = user.nickname === EXCLUSIVE_NICKNAME;
 
@@ -757,7 +723,7 @@ app.get('/api/films', async (req, res) => {
         }
       },
       { $project: { ratings: 0 } },
-      { $sort: { [sortField]: -1, _id: 1 } }, 
+      { $sort: { [sortField]: -1, _id: 1 } },
       { $skip: skip },
       { $limit: limit }
     ]);
