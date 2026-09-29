@@ -160,16 +160,55 @@ const commentSchema = new mongoose.Schema({
 });
 
 // ----- РЕЦЕНЗИИ -----
-const reviewSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
-  ratingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Rating', required: true },
-  title: { type: String, required: true, maxlength: 100 },
-  text: { type: String, required: true, maxlength: 5000 },
-  likes: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
-  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
+app.get('/api/reviews/:filmId', [
+  ...validateObjectId('filmId')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+  try {
+    let isAdmin = false;
+    let currentUserId = null;
+
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        currentUserId = decoded.userId;
+        const user = await User.findById(currentUserId);
+        isAdmin = user?.isAdmin || false;
+      } catch (e) { /* игнор */ }
+    }
+
+    // Админ видит всё; авторизованный — approved + свои pending;
+    // гость — только approved.
+    const query = { filmId: req.params.filmId };
+
+    if (!isAdmin) {
+      if (currentUserId) {
+        query.$or = [
+          { status: 'approved' },
+          { status: 'pending', userId: currentUserId }
+        ];
+      } else {
+        query.status = 'approved';
+      }
+    }
+
+    const reviews = await Review.find(query)
+      .populate('userId', 'nickname isAdmin avatar')
+      .populate('filmId', 'title poster')
+      .populate(
+        'ratingId',
+        'technicalScore combinedScore vibe genrePreset blockWeights scores createdAt'
+      )
+      .sort({ createdAt: -1 });
+
+    res.json(reviews);
+  } catch (error) {
+    console.error('Ошибка загрузки рецензий:', error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+  }
 });
 
 // ----- ДЕЙСТВИЯ (для топа) -----
