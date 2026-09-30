@@ -6,6 +6,18 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult, param } = require('express-validator');
 
+// ===== БЕЗОПАСНОСТЬ =====
+const {
+  helmetMiddleware,
+  globalLimiter,
+  authLimiter,
+  writeLimiter,
+  bodyLimit,
+  noSqlSanitizer,
+  verifyToken,
+  extractBearer
+} = require('./middleware/security');
+
 // ===== ЭКСКЛЮЗИВНЫЙ ПОЛЬЗОВАТЕЛЬ =====
 const EXCLUSIVE_NICKNAME = 'Дмитрий';
 
@@ -16,7 +28,12 @@ const app = express();
 
 // ===== ДИАГНОСТИКА ПЕРЕМЕННЫХ =====
 console.log('🔍 CLIENT_URL =', process.env.CLIENT_URL || '❌ НЕ УСТАНОВЛЕНА');
-console.log('🔍 TMDB_API_KEY =', process.env.TMDB_API_KEY ? '✅ Есть (первые 10 символов: ' + process.env.TMDB_API_KEY.slice(0, 10) + '...)' : '❌ НЕТ');
+console.log(
+  '🔍 TMDB_API_KEY =',
+  process.env.TMDB_API_KEY
+    ? '✅ Есть (первые 10 символов: ' + process.env.TMDB_API_KEY.slice(0, 10) + '...)'
+    : '❌ НЕТ'
+);
 
 // ===== НАСТРОЙКА CORS =====
 const allowedOrigins = [
@@ -40,7 +57,11 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+// ===== БЕЗОПАСНОСТЬ (порядок важен!) =====
+app.use(helmetMiddleware);                    // 1. заголовки
+app.use(globalLimiter);                       // 2. общий лимит запросов
+app.use(express.json({ limit: bodyLimit }));  // 3. парсинг тела с лимитом
+app.use(noSqlSanitizer);                      // 4. санитайз ПОСЛЕ парсинга
 
 // ===== ПРОВЕРКА ОБЯЗАТЕЛЬНЫХ ПЕРЕМЕННЫХ =====
 const requiredEnv = ['MONGODB_URI', 'JWT_SECRET', 'TMDB_API_KEY', 'ADMIN_SECRET_KEY'];
@@ -59,8 +80,6 @@ mongoose.set('strictQuery', false);
 
 // ============================================================
 // МИДДЛВАРЫ
-// (перенесены наверх, чтобы не было TDZ: validateObjectId используется
-//  в маршрутах, которые были объявлены раньше своего определения)
 // ============================================================
 
 const validateObjectId = (paramName) => [
@@ -68,10 +87,10 @@ const validateObjectId = (paramName) => [
 ];
 
 const authenticate = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const token = extractBearer(req);
   if (!token) return res.status(401).json({ error: 'Не авторизован' });
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verifyToken(token);          // ← алгоритм зафиксирован на HS256
     const user = await User.findById(decoded.userId);
     if (!user) return res.status(401).json({ error: 'Пользователь не найден' });
     req.userId = user._id;
@@ -125,10 +144,7 @@ const filmSchema = new mongoose.Schema({
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
 });
 
-/* === БЛОК S1: Схема Rating (Синефилиум 2.0) ===
-   - критерии и вайб: 1–10
-   - technicalScore и combinedScore: 10–100
-*/
+/* === БЛОК S1: Схема Rating (Синефилиум 2.0) === */
 const ratingSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   filmId: { type: mongoose.Schema.Types.ObjectId, ref: 'Film', required: true },
@@ -191,7 +207,6 @@ const commentSchema = new mongoose.Schema({
 });
 
 // ----- РЕЦЕНЗИИ -----
-// (ранее схема отсутствовала, из-за чего падало `mongoose.model('Review', reviewSchema)`)
 const reviewSchema = new mongoose.Schema({
   userId:   { type: mongoose.Schema.Types.ObjectId, ref: 'User',   required: true },
   filmId:   { type: mongoose.Schema.Types.ObjectId, ref: 'Film',   required: true },
@@ -204,7 +219,7 @@ const reviewSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// ----- ДЕЙСТВИЯ (для топа) -----
+// ----- ДЕЙСТВИЯ -----
 const actionSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   actorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -214,7 +229,7 @@ const actionSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// ----- СОБЫТИЯ (лента активности) -----
+// ----- СОБЫТИЯ -----
 const eventSchema = new mongoose.Schema({
   type: {
     type: String,
@@ -247,10 +262,9 @@ const Action  = mongoose.model('Action', actionSchema);
 const Event   = mongoose.model('Event', eventSchema);
 
 /* ============================================================
-   БЛОК S2: Конфиг и расчёт технического балла (Синефилиум 2.0)
+   БЛОК S2: Конфиг и расчёт технического балла
    ============================================================ */
 
-/* Критерии ВНУТРИ блока усредняются БЕЗ весов (среднее арифметическое) */
 const BLOCK_CRITERIA = {
   scenario:   ['plot', 'ideas', 'dialogue'],
   characters: ['depth', 'chemistry', 'functionality'],
@@ -259,7 +273,6 @@ const BLOCK_CRITERIA = {
   style:      ['originality', 'boldness']
 };
 
-/* Веса блоков по жанрам (сумма = 100%) */
 const GENRE_PRESETS = {
   drama:        [25, 20, 20, 15, 20],
   action:       [20, 20, 30, 20, 10],
@@ -272,23 +285,12 @@ const GENRE_PRESETS = {
   hybrid:       null
 };
 
-/* Базовые веса «без жанра» */
 const DEFAULT_WEIGHTS_ARRAY = [30, 25, 20, 15, 10];
-
-/* Множители формулы комбинированного балла */
-const TECHNICAL_WEIGHT = 0.7; // 70% техники
-const VIBE_WEIGHT      = 3;   // 30% вайба (перевод 1–10 → 10–100)
+const TECHNICAL_WEIGHT = 0.7;
+const VIBE_WEIGHT      = 3;
 
 const roundTenth = n => Math.round(n * 10) / 10;
 
-/**
- * Технический балл (ТБ) по системе «Синефилиум 2.0».
- * Шаг 1: среднее арифметическое критериев внутри каждого блока (1–10).
- * Шаг 2: ТБ = (Σ блок × вес) / 100 × 10 → 10–100, округление до десятых.
- *
- * @param scores  { scenario: {plot, ideas, dialogue}, ... } — значения 1–10
- * @param weights { scenario, characters, visual, sound, style } — проценты, сумма = 100
- */
 function calculateTechnicalScore(scores, weights) {
   const blockAvgs = {};
 
@@ -301,7 +303,7 @@ function calculateTechnicalScore(scores, weights) {
       }
       sum += v;
     }
-    blockAvgs[block] = sum / criteria.length; // 1–10
+    blockAvgs[block] = sum / criteria.length;
   }
 
   const weightedAvg =
@@ -311,10 +313,9 @@ function calculateTechnicalScore(scores, weights) {
     blockAvgs.sound      * (weights.sound      / 100) +
     blockAvgs.style      * (weights.style      / 100);
 
-  return roundTenth(weightedAvg * 10); // 10–100
+  return roundTenth(weightedAvg * 10);
 }
 
-/* Хелпер: массив весов → объект */
 function weightsArrayToObject(arr) {
   return {
     scenario:   arr[0],
@@ -325,7 +326,6 @@ function weightsArrayToObject(arr) {
   };
 }
 
-/* Хелпер: объект весов → массив (для нормализации) */
 function weightsObjectToArray(obj) {
   return [
     obj?.scenario   ?? 0,
@@ -376,7 +376,6 @@ async function createEvent(type, user, film, filmId, score = null, contentId = n
   }
 }
 
-// ===== ОБНОВЛЕНИЕ ДОСТИЖЕНИЙ =====
 async function updateAchievements(userId) {
   try {
     const ratingsCount  = await Rating.countDocuments({ userId });
@@ -422,7 +421,7 @@ async function updateAchievements(userId) {
 // АУТЕНТИФИКАЦИЯ
 // ============================================================
 
-app.post('/api/auth/register', [
+app.post('/api/auth/register', authLimiter, [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 6 }).withMessage('Пароль должен быть минимум 6 символов'),
   body('nickname').notEmpty().isLength({ max: 50 }).withMessage('Никнейм не длиннее 50 символов')
@@ -453,7 +452,7 @@ app.post('/api/auth/register', [
   }
 });
 
-app.post('/api/auth/login', [
+app.post('/api/auth/login', authLimiter, [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
 ], async (req, res) => {
@@ -485,12 +484,9 @@ app.post('/api/auth/login', [
 app.get('/api/auth/me', authenticate, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('-password');
-
-    // Добавляем флаг эксклюзивности
     const isExclusive = user.nickname === EXCLUSIVE_NICKNAME;
-
     res.json({
-      ...user.toObject(), // Разворачиваем документ Mongoose
+      ...user.toObject(),
       isExclusive
     });
   } catch (error) {
@@ -524,7 +520,6 @@ app.get('/api/films/top', async (req, res) => {
           averageVibe:     { $avg: '$ratings.vibe' },
           averageCombined: { $avg: '$ratings.combinedScore' },
           votesCount:      { $size: '$ratings' },
-          // защита от null при сортировке
           _sortKey: { $ifNull: [{ $avg: `$ratings.${
             sortField === 'averageCombined' ? 'combinedScore' :
             sortField === 'averageVibe'     ? 'vibe' :
@@ -532,10 +527,8 @@ app.get('/api/films/top', async (req, res) => {
           }` }, -1] }
         }
       },
-      // фильмы без оценок в топ не пускаем
       { $match: { _sortKey: { $gt: 0 } } },
       { $project: { ratings: 0, _sortKey: 0 } },
-      // тай-брейкер по количеству оценок и _id, чтобы топ не «дрожал»
       { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
       { $limit: limit }
     ]);
@@ -551,7 +544,7 @@ app.get('/api/films/top', async (req, res) => {
 // ФИЛЬМЫ
 // ============================================================
 
-/* === БЛОК S4: GET /api/films/:id — с тремя средними (ТБ / Вайб / Комбо) === */
+/* === БЛОК S4: GET /api/films/:id === */
 app.get('/api/films/:id', [
   ...validateObjectId('id')
 ], async (req, res) => {
@@ -581,19 +574,19 @@ app.get('/api/films/:id', [
     const votesCount   = ratingData[0]?.total        || 0;
 
     let userRating = null;
-    const token = req.headers.authorization?.split(' ')[1];
+    const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyToken(token);
         userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
       } catch (e) { /* игнор */ }
     }
 
     res.json({
       ...film.toObject(),
-      averageRating:   roundTenth(avgTechnical),  // ТБ — основной рейтинг
-      averageVibe:     roundTenth(avgVibe),       // 💫 средний вайб
-      averageCombined: roundTenth(avgCombined),   // ⭐ комбинированный
+      averageRating:   roundTenth(avgTechnical),
+      averageVibe:     roundTenth(avgVibe),
+      averageCombined: roundTenth(avgCombined),
       votesCount,
       userRating
     });
@@ -620,7 +613,7 @@ app.get('/api/films/search-by-title', async (req, res) => {
   }
 });
 
-/* === GET /api/films/:id/ratings — все оценки фильма === */
+/* === GET /api/films/:id/ratings === */
 app.get('/api/films/:id/ratings', async (req, res) => {
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
@@ -633,7 +626,6 @@ app.get('/api/films/:id/ratings', async (req, res) => {
         _id:            r._id,
         technicalScore: r.technicalScore,
         combinedScore:  r.combinedScore,
-        // алиас для обратной совместимости с фронтом
         finalScore:     r.combinedScore,
         vibe:           r.vibe,
         textReview:     r.textReview,
@@ -689,7 +681,7 @@ app.get('/api/films/:id/users', async (req, res) => {
   }
 });
 
-/* === БЛОК S6: GET /api/films — сортировка по ТБ / вайбу / комбо === */
+/* === БЛОК S6: GET /api/films === */
 app.get('/api/films', async (req, res) => {
   try {
     const sort  = req.query.sort || 'technical';
@@ -750,7 +742,7 @@ app.get('/api/films', async (req, res) => {
 // КОММЕНТАРИИ
 // ============================================================
 
-app.post('/api/comments', [
+app.post('/api/comments', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('text').notEmpty().isLength({ max: 1000 }).withMessage('Текст не длиннее 1000 символов'),
   body('parentId').optional().isMongoId().withMessage('Некорректный ID родительского комментария')
@@ -788,10 +780,10 @@ app.get('/api/comments/:filmId', [
 
   try {
     let isAdmin = false;
-    const token = req.headers.authorization?.split(' ')[1];
+    const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyToken(token);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
       } catch (e) { /* игнор */ }
@@ -827,7 +819,7 @@ app.get('/api/comments/:filmId', [
   }
 });
 
-app.post('/api/comments/:id/like', [
+app.post('/api/comments/:id/like', writeLimiter, [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
   const errors = validationResult(req);
@@ -862,7 +854,7 @@ app.post('/api/comments/:id/like', [
 // РЕЦЕНЗИИ
 // ============================================================
 
-app.post('/api/reviews', [
+app.post('/api/reviews', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('ratingId').isMongoId().withMessage('Некорректный ID оценки'),
   body('title').notEmpty().isLength({ max: 100 }).withMessage('Заголовок не длиннее 100 символов'),
@@ -904,10 +896,10 @@ app.get('/api/reviews/:filmId', [
 
   try {
     let isAdmin = false;
-    const token = req.headers.authorization?.split(' ')[1];
+    const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyToken(token);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
       } catch (e) { /* игнор */ }
@@ -949,7 +941,7 @@ app.get('/api/reviews/details/:id', [
   }
 });
 
-app.post('/api/reviews/:id/like', [
+app.post('/api/reviews/:id/like', writeLimiter, [
   ...validateObjectId('id')
 ], authenticate, async (req, res) => {
   const errors = validationResult(req);
@@ -1026,17 +1018,14 @@ app.get('/api/top/users', async (req, res) => {
 // ОЦЕНКИ (Синефилиум 2.0)
 // ============================================================
 
-/* === БЛОК S3: POST /api/ratings === */
-app.post('/api/ratings', authenticate, async (req, res) => {
+app.post('/api/ratings', writeLimiter, authenticate, async (req, res) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
-    // --- filmId ---
     if (!filmId || !mongoose.Types.ObjectId.isValid(filmId)) {
       return res.status(400).json({ message: 'Некорректный filmId' });
     }
 
-    // --- scores ---
     if (!scores || typeof scores !== 'object') {
       return res.status(400).json({ message: 'scores обязателен и должен быть объектом' });
     }
@@ -1055,12 +1044,10 @@ app.post('/api/ratings', authenticate, async (req, res) => {
       }
     }
 
-    // --- vibe ---
     if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
       return res.status(400).json({ message: 'vibe должен быть от 1 до 10' });
     }
 
-    // --- веса ---
     let weightsArray;
 
     if (genrePreset && GENRE_PRESETS[genrePreset] && genrePreset !== 'hybrid') {
@@ -1086,7 +1073,6 @@ app.post('/api/ratings', authenticate, async (req, res) => {
 
     const weights = weightsArrayToObject(weightsArray);
 
-    // --- расчёт ТБ и комбинированного ---
     let technicalScore;
     try {
       technicalScore = calculateTechnicalScore(scores, weights);
@@ -1095,15 +1081,12 @@ app.post('/api/ratings', authenticate, async (req, res) => {
     }
     const combinedScore = roundTenth(technicalScore * TECHNICAL_WEIGHT + vibe * VIBE_WEIGHT);
 
-    // --- фильм ---
     const film = await Film.findById(filmId);
     if (!film) return res.status(404).json({ error: 'Фильм не найден' });
 
-    // --- есть ли уже оценка ---
     const existingRating = await Rating.findOne({ userId: req.userId, filmId });
     const isNew = !existingRating;
 
-    // --- сохранение ---
     const rating = await Rating.findOneAndUpdate(
       { userId: req.userId, filmId },
       {
@@ -1120,7 +1103,6 @@ app.post('/api/ratings', authenticate, async (req, res) => {
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
     );
 
-    // --- награды при первой оценке ---
     if (isNew) {
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
@@ -1152,7 +1134,7 @@ app.post('/api/ratings', authenticate, async (req, res) => {
       technicalScore,
       combinedScore,
       vibe,
-      finalScore: combinedScore // алиас для обратной совместимости
+      finalScore: combinedScore
     });
   } catch (err) {
     console.error('Ошибка сохранения оценки:', err);
@@ -1387,10 +1369,10 @@ app.get('/api/users/:id', [
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
     let isOwnProfile = false;
-    const token = req.headers.authorization?.split(' ')[1];
+    const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const decoded = verifyToken(token);
         isOwnProfile = decoded.userId === userId;
       } catch { /* игнор */ }
     }
@@ -1407,7 +1389,6 @@ app.get('/api/users/:id', [
         email: isOwnProfile ? user.email : undefined,
         isExclusive: user.nickname === EXCLUSIVE_NICKNAME
       },
-      /* === БЛОК S5: Профиль пользователя === */
       ratings: ratings.map(r => ({
         id: r._id,
         film: r.filmId,
