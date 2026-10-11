@@ -880,7 +880,8 @@ app.post('/api/reviews', writeLimiter, [
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster');
+      .populate('filmId', 'title poster')
+      .populate('ratingId');   // ← добавлено для консистентности
     res.json(reviewWithUser);
   } catch (error) {
     console.error('Ошибка добавления рецензии:', error);
@@ -904,6 +905,7 @@ app.get('/api/reviews/user', authenticate, async (req, res) => {
   }
 });
 
+/* === ИСПРАВЛЕНО: добавлен .populate('ratingId') === */
 app.get('/api/reviews/:filmId', [
   ...validateObjectId('filmId')
 ], async (req, res) => {
@@ -929,6 +931,7 @@ app.get('/api/reviews/:filmId', [
     })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
+      .populate('ratingId')            // ← ФИКС: тянем оценки (scores, vibe, combinedScore, technicalScore)
       .sort({ createdAt: -1 });
 
     res.json(reviews);
@@ -1380,11 +1383,11 @@ app.get('/api/users/:id', [
     const user = await User.findById(userId).select('-password');
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
-   const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
-   const reviews  = await Review.find({ userId })
-  .populate('filmId', 'title poster year')
-  .populate('ratingId');                 // ← добавляем: тянет scores, vibe, combinedScore, technicalScore
-   const comments = await Comment.find({ userId }).populate('filmId', 'title');
+    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
+    const reviews  = await Review.find({ userId })
+      .populate('filmId', 'title poster year')
+      .populate('ratingId');                 // ← тянет scores, vibe, combinedScore, technicalScore
+    const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
     let isOwnProfile = false;
     const token = extractBearer(req);
@@ -1419,17 +1422,17 @@ app.get('/api/users/:id', [
         textReview:     r.textReview,
         createdAt:      r.createdAt
       })),
-     reviews: reviews.map(r => ({
-  _id: r._id,
-  id: r._id,
-  film: r.filmId,
-  filmId: r.filmId,
-  ratingId: r.ratingId,          // ← сюда попадут scores, vibe, combinedScore, technicalScore
-  title: r.title,
-  text: r.text,
-  likes: r.likes,
-  createdAt: r.createdAt         // ← нужно для даты
-})),
+      reviews: reviews.map(r => ({
+        _id: r._id,
+        id: r._id,
+        film: r.filmId,
+        filmId: r.filmId,
+        ratingId: r.ratingId,          // ← сюда попадут scores, vibe, combinedScore, technicalScore
+        title: r.title,
+        text: r.text,
+        likes: r.likes,
+        createdAt: r.createdAt         // ← нужно для даты
+      })),
       comments: comments.map(c => ({
         id: c._id,
         film: c.filmId,
