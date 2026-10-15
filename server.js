@@ -1329,44 +1329,7 @@ app.post('/api/films/import', [
   }
 });
 
-// ============================================================
-// ПРОКСИ ДЛЯ ПОСТЕРОВ TMDB
-// ============================================================
-app.get('/api/poster/*', async (req, res) => {
-  const path = req.params[0];
-  if (!path || path.includes('..')) return res.status(400).end();
 
-  try {
-    const r = await fetch(`https://image.tmdb.org/t/p/${path}`);
-    if (!r.ok) return res.status(404).end();
-
-    res.set('Cache-Control', 'public, max-age=604800, immutable');
-    res.set('Content-Type', r.headers.get('content-type') || 'image/jpeg');
-
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.send(buf);
-  } catch (err) {
-    console.error('Ошибка прокси постера:', err);
-    res.status(502).end();
-  }
-});
-
-/* === ПОЛУЧИТЬ ЮЗЕРА ПО НИКУ === */
-app.get('/api/users/nickname/:nickname', async (req, res) => {
-  try {
-    const user = await User.findOne({ nickname: req.params.nickname }).select('-password');
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
-    res.json({
-      _id: user._id,
-      nickname: user.nickname,
-      avatar: user.avatar,
-      isExclusive: user.nickname === EXCLUSIVE_NICKNAME
-    });
-  } catch (error) {
-    console.error('Ошибка поиска по нику:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
 
 // ============================================================
 // ПОЛЬЗОВАТЕЛИ
