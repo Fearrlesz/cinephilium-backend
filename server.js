@@ -880,8 +880,7 @@ app.post('/api/reviews', writeLimiter, [
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster')
-      .populate('ratingId');   // ← добавлено для консистентности
+      .populate('filmId', 'title poster');
     res.json(reviewWithUser);
   } catch (error) {
     console.error('Ошибка добавления рецензии:', error);
@@ -889,23 +888,6 @@ app.post('/api/reviews', writeLimiter, [
   }
 });
 
-/* === Рецензии текущего пользователя === */
-app.get('/api/reviews/user', authenticate, async (req, res) => {
-  try {
-    const reviews = await Review.find({ userId: req.userId })
-      .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster year')
-      .populate('ratingId')            // ← ключевое: без него не будет ни баллов, ни блоков
-      .sort({ createdAt: -1 });
-
-    res.json(reviews);
-  } catch (error) {
-    console.error('Ошибка получения рецензий пользователя:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
-  }
-});
-
-/* === ИСПРАВЛЕНО: добавлен .populate('ratingId') === */
 app.get('/api/reviews/:filmId', [
   ...validateObjectId('filmId')
 ], async (req, res) => {
@@ -931,7 +913,6 @@ app.get('/api/reviews/:filmId', [
     })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster')
-      .populate('ratingId')            // ← ФИКС: тянем оценки (scores, vibe, combinedScore, technicalScore)
       .sort({ createdAt: -1 });
 
     res.json(reviews);
@@ -1384,9 +1365,7 @@ app.get('/api/users/:id', [
     if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
     const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
-    const reviews  = await Review.find({ userId })
-      .populate('filmId', 'title poster year')
-      .populate('ratingId');                 // ← тянет scores, vibe, combinedScore, technicalScore
+    const reviews  = await Review.find({ userId }).populate('filmId', 'title poster');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
     let isOwnProfile = false;
@@ -1423,15 +1402,11 @@ app.get('/api/users/:id', [
         createdAt:      r.createdAt
       })),
       reviews: reviews.map(r => ({
-        _id: r._id,
         id: r._id,
         film: r.filmId,
-        filmId: r.filmId,
-        ratingId: r.ratingId,          // ← сюда попадут scores, vibe, combinedScore, technicalScore
         title: r.title,
         text: r.text,
-        likes: r.likes,
-        createdAt: r.createdAt         // ← нужно для даты
+        likes: r.likes.length
       })),
       comments: comments.map(c => ({
         id: c._id,
