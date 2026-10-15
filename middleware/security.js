@@ -1,5 +1,6 @@
 // middleware/security.js
 // Централизованный набор middleware для безопасности Express-приложения.
+// Совместимо с Express 5.x и express-rate-limit 8.x.
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -24,10 +25,9 @@ const helmetMiddleware = helmet({
 /* ============================================================
    2. Общий rate limiter — защита от флуда и DoS
    ============================================================
-   С express-rate-limit@8+ синтаксис `limit` остался прежним,
-   но добавлена корректная обработка IPv6 (CVE-2026-30827).
    ВАЖНО: на Render обязательно должен быть app.set('trust proxy', 1),
    иначе все запросы будут считаться с одного IP.
+   Этот вызов делается в server.js, а не здесь.
 */
 const globalLimiter = rateLimit({
   windowMs: 60 * 1000,       // 1 минута
@@ -93,7 +93,7 @@ function sanitizeValue(value) {
 }
 
 function noSqlSanitizer(req, _res, next) {
-  // Очищаем body
+  // Очищаем body (в Express 5 можно присваивать напрямую)
   if (req.body && typeof req.body === 'object') {
     req.body = sanitizeValue(req.body);
   }
