@@ -17,7 +17,10 @@ router.post('/', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('ratingId').isMongoId().withMessage('Некорректный ID оценки'),
   body('title').notEmpty().isLength({ max: 100 }).withMessage('Заголовок не длиннее 100 символов'),
-  body('text').notEmpty().isLength({ max: 5000 }).withMessage('Текст не длиннее 5000 символов')
+  body('text')
+    .notEmpty().withMessage('Текст рецензии обязателен')
+    .isLength({ min: 450 }).withMessage('Текст рецензии должен быть не короче 450 символов')
+    .isLength({ max: 15000 }).withMessage('Текст рецензии не длиннее 15000 символов')
 ], authenticate, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
