@@ -1,5 +1,7 @@
 // utils/achievements.js
 
+const mongoose = require('mongoose');
+
 // ============================================================
 // ДОСТИЖЕНИЯ (ГЕЙМИФИКАЦИЯ)
 // ============================================================
@@ -47,6 +49,10 @@ function getBasicAchievements(ratingsCount, reviewsCount, commentsCount) {
 async function getSpecialAchievements(userId, db) {
   const earned = [];
 
+  const uid = mongoose.Types.ObjectId.isValid(userId)
+    ? new mongoose.Types.ObjectId(userId)
+    : userId;
+
   const ratingsCollection = db.collection('ratings');
   const commentsCollection = db.collection('comments');
   const filmsCollection = db.collection('films');
@@ -54,25 +60,25 @@ async function getSpecialAchievements(userId, db) {
 
   // --- Высокие оценки (80+) ---
   const highRatings = await ratingsCollection
-    .find({ userId, finalScore: { $gte: 80 } })
+    .find({ userId: uid, combinedScore: { $gte: 80 } })
     .toArray();
   if (highRatings.length >= 1) earned.push('🎯 Меткий стрелок');
   if (highRatings.length >= 5) earned.push('⭐ Ценитель шедевров');
 
   // --- Оценки 90 (шедевры) ---
   const masterpieces = await ratingsCollection
-    .find({ userId, finalScore: 90 })
+    .find({ userId: uid, combinedScore: 90 })
     .toArray();
   if (masterpieces.length >= 1) earned.push('👑 Гурман');
 
   // --- Лайки на комментариях (полученные автором) ---
   const likedComments = await commentsCollection
-    .find({ userId, likes: { $exists: true, $ne: [] } })
+    .find({ userId: uid, likes: { $exists: true, $ne: [] } })
     .toArray();
   if (likedComments.length >= 5) earned.push('🤝 Дружелюбный');
 
   // --- Добавленные фильмы ---
-  const importedFilms = await filmsCollection.countDocuments({ createdBy: userId });
+  const importedFilms = await filmsCollection.countDocuments({ createdBy: uid });
   if (importedFilms >= 1) earned.push('🎪 Меценат');
 
   // --- 🎬 ПЕРВЫЙ КАДР (для первых 100 пользователей) ---
