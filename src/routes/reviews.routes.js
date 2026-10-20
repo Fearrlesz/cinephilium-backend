@@ -6,7 +6,8 @@ const Film    = require('../models/Film');
 const User    = require('../models/User');
 const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { addPoints } = require('../utils/points');
 const { updateAchievements } = require('../utils/helpers');
 
@@ -96,7 +97,7 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
       } catch { /* игнор */ }

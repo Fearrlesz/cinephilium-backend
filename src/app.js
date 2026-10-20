@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const cookieParser = require('cookie-parser');
 
 // Безопасность
 const {
@@ -41,7 +42,8 @@ app.use(corsMiddleware);
 app.use(helmetMiddleware);                    // 1. заголовки
 app.use(globalLimiter);                       // 2. общий лимит запросов
 app.use(express.json({ limit: bodyLimit }));  // 3. парсинг тела с лимитом
-app.use(noSqlSanitizer);                      // 4. санитайз ПОСЛЕ парсинга
+app.use(cookieParser());                       // 4. cookie для refresh-токенов
+app.use(noSqlSanitizer);                      // 5. санитайз ПОСЛЕ парсинга
 
 // ===== МАРШРУТЫ =====
 app.use('/api/auth',     authRoutes);

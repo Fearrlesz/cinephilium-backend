@@ -90,10 +90,11 @@ function noSqlSanitizer(req, _res, next) {
 
 /* 7. Защита от подделки JWT (alg: none) */
 function verifyToken(token) {
-  if (!process.env.JWT_SECRET) {
-    throw new Error('JWT_SECRET не установлен — генерация и проверка токенов невозможны');
+  const secret = process.env.JWT_ACCESS_SECRET || process.env.JWT_SECRET;
+  if (!secret) {
+    throw new Error('JWT_ACCESS_SECRET не установлен — генерация и проверка токенов невозможны');
   }
-  return jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+  return jwt.verify(token, secret, { algorithms: ['HS256'] });
 }
 
 /* 8. Хелпер: извлечение Bearer-токена */

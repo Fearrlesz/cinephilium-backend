@@ -1,18 +1,23 @@
 process.env.NODE_ENV = 'test';
 process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_ACCESS_SECRET = 'test-jwt-access-secret';
+process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.TMDB_API_KEY = 'test-tmdb-key';
 process.env.ADMIN_SECRET_KEY = 'test-admin-key';
+process.env.CORS_ORIGIN = 'https://film.ru';
 
 const { after, before, test } = require('node:test');
 const assert = require('node:assert/strict');
 const bcrypt = require('bcryptjs');
+const mongoose = require('mongoose');
 const User = require('../src/models/User');
+const Session = require('../src/models/Session');
 const Review = require('../src/models/Review');
 const Rating = require('../src/models/Rating');
 const Film = require('../src/models/Film');
 const mailer = require('../src/services/mailer');
 const { hashToken } = require('../src/utils/tokens');
+const { signAccessToken } = require('../src/utils/jwt');
 const app = require('../src/app');
 
 let server;
@@ -53,11 +58,7 @@ async function withOverrides(overrides, callback) {
   }
 }
 
-function mockSave(object) {
-  return [object, 'save', async function save() {}];
-}
-
-test('1. register stores an unverified user and sends a hashed-code email', async () => {
+test('register stores an unverified user and sends a hashed-code email', async () => {
   let savedUser;
   let mailed;
   await withOverrides([
@@ -71,30 +72,35 @@ test('1. register stores an unverified user and sends a hashed-code email', asyn
     const body = await response.json();
     assert.equal(response.status, 201);
     assert.equal(body.user.emailVerified, false);
-    assert.equal(body.token, undefined);
+    assert.equal(body.accessToken, undefined);
     assert.equal(savedUser.emailVerified, false);
     assert.equal(savedUser.emailVerification.codeHash, hashToken(mailed.code));
     assert.equal(mailed.email, 'new@example.com');
   });
 });
 
-test('2. verify accepts the correct code and issues a token', async () => {
+test('verify accepts the correct code and issues an access token', async () => {
   const user = {
-    _id: 'verified-user', email: 'verify@example.com', nickname: 'Verify', emailVerified: false,
+    _id: new mongoose.Types.ObjectId(), email: 'verify@example.com', nickname: 'Verify', emailVerified: false,
     emailVerification: { codeHash: hashToken('123456'), expiresAt: new Date(Date.now() + 60000), attempts: 0 },
     save: async function save() {}
   };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
+  await withOverrides([
+    [User, 'findOne', async () => user],
+    [Session.prototype, 'save', async function save() {}]
+  ], async () => {
     const response = await post('auth/verify-email', { email: user.email, code: '123456' });
     const body = await response.json();
     assert.equal(response.status, 200);
-    assert.ok(body.token);
+    assert.ok(body.accessToken);
+    assert.equal(body.token, undefined);
+    assert.match(response.headers.get('set-cookie'), /refresh_token=.*HttpOnly/);
     assert.equal(user.emailVerified, true);
     assert.equal(user.emailVerification, null);
   });
 });
 
-test('3. incorrect verification code increments attempts', async () => {
+test('incorrect verification code increments attempts', async () => {
   const user = {
     emailVerified: false,
     emailVerification: { codeHash: hashToken('123456'), expiresAt: new Date(Date.now() + 60000), attempts: 0 },
@@ -108,7 +114,7 @@ test('3. incorrect verification code increments attempts', async () => {
   });
 });
 
-test('4. verification is blocked after five incorrect attempts', async () => {
+test('verification is blocked after five incorrect attempts', async () => {
   const user = {
     emailVerified: false,
     emailVerification: { codeHash: hashToken('123456'), expiresAt: new Date(Date.now() + 60000), attempts: 5 }
@@ -120,7 +126,7 @@ test('4. verification is blocked after five incorrect attempts', async () => {
   });
 });
 
-test('5. expired verification code is rejected', async () => {
+test('expired verification code is rejected', async () => {
   const user = {
     emailVerified: false,
     emailVerification: { codeHash: hashToken('123456'), expiresAt: new Date(Date.now() - 1000), attempts: 0 }
@@ -132,32 +138,30 @@ test('5. expired verification code is rejected', async () => {
   });
 });
 
-test('6. verification resend honors the cooldown', async () => {
-  const user = { emailVerified: false, emailVerification: { sentAt: new Date(), resendHistory: [] } };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
+test('verification resend honors cooldown and hourly limit', async () => {
+  const cooldownUser = { emailVerified: false, emailVerification: { sentAt: new Date(), resendHistory: [] } };
+  await withOverrides([[User, 'findOne', async () => cooldownUser]], async () => {
     const response = await post('auth/resend-verification', { email: 'verify@example.com' });
     assert.equal(response.status, 429);
     assert.equal((await response.json()).error.code, 'RESEND_COOLDOWN');
   });
-});
 
-test('7. verification resend honors the hourly limit', async () => {
   const now = Date.now();
-  const user = {
+  const limitedUser = {
     emailVerified: false,
     emailVerification: {
       sentAt: new Date(now - 61000),
       resendHistory: [new Date(now - 20 * 60000), new Date(now - 10 * 60000), new Date(now - 2 * 60000)]
     }
   };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
+  await withOverrides([[User, 'findOne', async () => limitedUser]], async () => {
     const response = await post('auth/resend-verification', { email: 'verify@example.com' });
     assert.equal(response.status, 429);
     assert.equal((await response.json()).error.code, 'RESEND_LIMIT');
   });
 });
 
-test('8. forgot password stores only a token hash and sends a reset link', async () => {
+test('forgot password stores only a token hash and hides unknown emails', async () => {
   const user = { email: 'forgot@example.com', save: async function save() {} };
   let resetUrl;
   await withOverrides([
@@ -170,9 +174,7 @@ test('8. forgot password stores only a token hash and sends a reset link', async
     assert.equal(user.passwordReset.tokenHash, hashToken(token));
     assert.ok(!JSON.stringify(user.passwordReset).includes(token));
   });
-});
 
-test('9. forgot password returns the same response for an unknown email', async () => {
   await withOverrides([[User, 'findOne', async () => null]], async () => {
     const response = await post('auth/forgot-password', { email: 'missing@example.com' });
     assert.equal(response.status, 200);
@@ -180,85 +182,75 @@ test('9. forgot password returns the same response for an unknown email', async 
   });
 });
 
-test('10. valid reset token changes the password and is invalidated', async () => {
+test('valid password reset changes the password; expired and used tokens are rejected', async () => {
   const oldPassword = await bcrypt.hash('old-password', 4);
   const user = {
+    _id: new mongoose.Types.ObjectId(),
     password: oldPassword,
     passwordReset: { tokenHash: hashToken('reset-token'), expiresAt: new Date(Date.now() + 60000), usedAt: null },
     save: async function save() {}
   };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
+  let revokedUserId;
+  await withOverrides([
+    [User, 'findOne', async () => user],
+    [Session, 'deleteMany', async query => { revokedUserId = query.userId; return { deletedCount: 1 }; }]
+  ], async () => {
     const response = await post('auth/reset-password', { token: 'reset-token', newPassword: 'new-password' });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).message, 'Пароль изменён');
-    assert.equal(await bcrypt.compare('old-password', user.password), false);
     assert.equal(await bcrypt.compare('new-password', user.password), true);
     assert.equal(user.passwordReset, null);
+    assert.equal(revokedUserId.toString(), user._id.toString());
   });
+
+  for (const passwordReset of [
+    { expiresAt: new Date(Date.now() - 1000), usedAt: null },
+    { expiresAt: new Date(Date.now() + 60000), usedAt: new Date() }
+  ]) {
+    await withOverrides([[User, 'findOne', async () => ({ passwordReset })]], async () => {
+      const response = await post('auth/reset-password', { token: 'reset-token', newPassword: 'new-password' });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error.code, 'INVALID_OR_EXPIRED_TOKEN');
+    });
+  }
 });
 
-test('11. expired reset token is rejected', async () => {
-  const user = { passwordReset: { expiresAt: new Date(Date.now() - 1000), usedAt: null } };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
-    const response = await post('auth/reset-password', { token: 'reset-token', newPassword: 'new-password' });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error.code, 'INVALID_OR_EXPIRED_TOKEN');
-  });
-});
-
-test('12. used reset token is rejected', async () => {
-  const user = { passwordReset: { expiresAt: new Date(Date.now() + 60000), usedAt: new Date() } };
-  await withOverrides([[User, 'findOne', async () => user]], async () => {
-    const response = await post('auth/reset-password', { token: 'reset-token', newPassword: 'new-password' });
-    assert.equal(response.status, 400);
-    assert.equal((await response.json()).error.code, 'INVALID_OR_EXPIRED_TOKEN');
-  });
-});
-
-test('13. unverified user cannot create a review', async () => {
-  const user = { _id: 'unverified-user', emailVerified: false, isAdmin: false };
-  await withOverrides([[User, 'findById', async () => user]], async () => {
-    const token = require('jsonwebtoken').sign({ userId: user._id }, process.env.JWT_SECRET);
-    const response = await post('reviews', {}, token);
+test('unverified users cannot create reviews and verified users can', async () => {
+  const unverifiedUser = { _id: 'unverified-user', emailVerified: false, isAdmin: false };
+  await withOverrides([[User, 'findById', async () => unverifiedUser]], async () => {
+    const response = await post('reviews', {}, signAccessToken(unverifiedUser._id));
     assert.equal(response.status, 403);
     assert.equal((await response.json()).error.code, 'EMAIL_NOT_VERIFIED');
   });
-});
 
-test('14. verified user can create a review', async () => {
-  const user = { _id: 'verified-user', emailVerified: true, isAdmin: false };
+  const verifiedUser = { _id: 'verified-user', emailVerified: true, isAdmin: false };
   await withOverrides([
-    [User, 'findById', async () => user],
+    [User, 'findById', async () => verifiedUser],
     [Film, 'findById', async () => ({ _id: 'film-1' })],
     [Rating, 'findOne', async () => ({ _id: 'rating-1' })],
     [Review, 'findOne', async () => null],
     [Review.prototype, 'save', async function save() {}],
     [Review, 'findById', () => ({ populate() { return this; } })]
   ], async () => {
-    const token = require('jsonwebtoken').sign({ userId: user._id }, process.env.JWT_SECRET);
     const response = await post('reviews', {
       filmId: '507f1f77bcf86cd799439011',
       ratingId: '507f1f77bcf86cd799439012',
       title: 'Review',
       text: 'a'.repeat(450)
-    }, token);
+    }, signAccessToken(verifiedUser._id));
     assert.equal(response.status, 200);
   });
 });
 
-test('15. registering an already verified email returns conflict', async () => {
-  await withOverrides([
-    [User, 'findOne', async query => query.email ? { emailVerified: true } : null]
-  ], async () => {
+test('registration rejects duplicates, resends pending verification, and validates passwords', async () => {
+  await withOverrides([[User, 'findOne', async query => query.email ? { emailVerified: true } : null]], async () => {
     const response = await post('auth/register', {
       email: 'existing@example.com', password: 'password123', nickname: 'Existing'
     });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).error.code, 'CONFLICT');
   });
-});
 
-test('16. registering an unverified email resends after the cooldown', async () => {
   const user = {
     _id: 'pending-user', email: 'pending@example.com', nickname: 'Pending', emailVerified: false,
     emailVerification: { sentAt: new Date(Date.now() - 61000), resendHistory: [new Date(Date.now() - 61000)] },
@@ -276,9 +268,7 @@ test('16. registering an unverified email resends after the cooldown', async () 
     assert.equal((await response.json()).message, 'Проверьте почту для подтверждения');
     assert.equal(sendCount, 1);
   });
-});
 
-test('register rejects passwords shorter than eight characters', async () => {
   const response = await post('auth/register', {
     email: 'short@example.com', password: '1234567', nickname: 'Short'
   });

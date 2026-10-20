@@ -1,13 +1,15 @@
 process.env.NODE_ENV = 'test';
 process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test';
-process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_ACCESS_SECRET = 'test-jwt-access-secret';
+process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.TMDB_API_KEY = 'test-tmdb-key';
 process.env.ADMIN_SECRET_KEY = 'test-admin-key';
+process.env.CORS_ORIGIN = 'https://film.ru';
 
 const { after, before, test } = require('node:test');
 const assert = require('node:assert/strict');
-const jwt = require('jsonwebtoken');
 const User = require('../src/models/User');
+const { signAccessToken } = require('../src/utils/jwt');
 const app = require('../src/app');
 
 let server;
@@ -101,7 +103,7 @@ test('admin routes reject authenticated non-admin users', async () => {
   const originalFindById = User.findById;
   User.findById = async () => ({ _id: 'regular-user', isAdmin: false });
   try {
-    const token = jwt.sign({ userId: 'regular-user' }, process.env.JWT_SECRET);
+    const token = signAccessToken('regular-user');
     const response = await fetch(`${baseUrl}/api/admin/pending/comments`, {
       headers: { authorization: `Bearer ${token}` }
     });

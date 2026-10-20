@@ -5,7 +5,8 @@ const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { roundTenth } = require('../config/scoring');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
@@ -115,7 +116,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
       } catch { /* игнор */ }
     }

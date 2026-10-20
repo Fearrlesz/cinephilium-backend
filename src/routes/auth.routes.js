@@ -1,20 +1,23 @@
 const express  = require('express');
 const bcrypt   = require('bcryptjs');
-const jwt      = require('jsonwebtoken');
 const { body } = require('express-validator');
 const User     = require('../models/User');
+const Session  = require('../models/Session');
 const { authLimiter } = require('../middleware/security');
 const { authenticate } = require('../middleware/auth');
 const {
   EXCLUSIVE_NICKNAME,
   EMAIL_CODE_TTL_MIN,
   EMAIL_RESEND_COOLDOWN_SEC,
-  EMAIL_RESEND_MAX_PER_HOUR
+  EMAIL_RESEND_MAX_PER_HOUR,
+  JWT_REFRESH_TTL_DAYS
 } = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
 const { UnauthorizedError, ConflictError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 const { generateNumericCode, generateResetToken, hashToken } = require('../utils/tokens');
+const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const { setRefreshCookie, clearRefreshCookie } = require('../utils/cookies');
 const mailer = require('../services/mailer');
 
 const router = express.Router();
@@ -30,8 +33,19 @@ function publicUser(user) {
   };
 }
 
-function issueJwt(user) {
-  return jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+async function issueTokens(user, req, res) {
+  const now = new Date();
+  const session = new Session({
+    userId: user._id,
+    userAgent: req.get('user-agent'),
+    ip: req.ip,
+    expiresAt: new Date(now.getTime() + JWT_REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000)
+  });
+  const refreshToken = signRefreshToken(user._id, session._id);
+  session.tokenHash = hashToken(refreshToken);
+  await session.save();
+  setRefreshCookie(res, refreshToken);
+  return signAccessToken(user._id);
 }
 
 function dispatchEmail(send) {
@@ -136,7 +150,8 @@ router.post('/verify-email', authLimiter, [
   user.emailVerified = true;
   user.emailVerification = null;
   await user.save();
-  return res.json({ token: issueJwt(user), user: publicUser(user) });
+  const accessToken = await issueTokens(user, req, res);
+  return res.json({ accessToken, user: publicUser(user) });
 }));
 
 // POST /api/auth/resend-verification
@@ -197,7 +212,7 @@ router.post('/reset-password', authLimiter, [
   reset.usedAt = new Date();
   user.passwordReset = null;
   await user.save();
-  // TODO: invalidate the user's refresh tokens when session storage is introduced.
+  await Session.deleteMany({ userId: user._id });
   return res.json({ message: 'Пароль изменён' });
 }));
 
@@ -220,9 +235,9 @@ router.post('/login', authLimiter, [
     const isValid = await bcrypt.compare(password, user.password);
     if (!isValid) throw new UnauthorizedError('Неверный email или пароль');
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const accessToken = await issueTokens(user, req, res);
     res.json({
-      token,
+      accessToken,
       user: {
         id: user._id, email: user.email, nickname: user.nickname,
         isAdmin: user.isAdmin, totalPoints: user.totalPoints
@@ -231,6 +246,65 @@ router.post('/login', authLimiter, [
   } catch (error) {
     throw error;
   }
+}));
+
+// POST /api/auth/refresh
+router.post('/refresh', asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refresh_token;
+  if (!refreshToken) {
+    throw new AppError('NO_REFRESH_TOKEN', 'Refresh-токен отсутствует', 401);
+  }
+
+  let payload;
+  try {
+    payload = verifyRefreshToken(refreshToken);
+  } catch {
+    clearRefreshCookie(res);
+    throw new AppError('INVALID_REFRESH_TOKEN', 'Refresh-токен недействителен', 401);
+  }
+
+  const session = await Session.findOne({
+    _id: payload.sessionId,
+    tokenHash: hashToken(refreshToken)
+  });
+  if (!session) {
+    clearRefreshCookie(res);
+    throw new AppError('SESSION_REVOKED', 'Сессия завершена', 401);
+  }
+
+  const now = new Date();
+  if (session.expiresAt <= now) {
+    await Session.deleteOne({ _id: session._id });
+    clearRefreshCookie(res);
+    throw new AppError('SESSION_EXPIRED', 'Срок сессии истёк', 401);
+  }
+
+  const newRefreshToken = signRefreshToken(payload.userId, payload.sessionId);
+  const rotation = await Session.updateOne(
+    { _id: session._id, tokenHash: hashToken(refreshToken), expiresAt: { $gt: now } },
+    { $set: { tokenHash: hashToken(newRefreshToken), lastUsedAt: now } }
+  );
+  if (rotation.modifiedCount !== 1) {
+    clearRefreshCookie(res);
+    throw new AppError('SESSION_REVOKED', 'Сессия завершена', 401);
+  }
+  setRefreshCookie(res, newRefreshToken);
+  return res.json({ accessToken: signAccessToken(payload.userId) });
+}));
+
+// POST /api/auth/logout
+router.post('/logout', asyncHandler(async (req, res) => {
+  const refreshToken = req.cookies?.refresh_token;
+  if (refreshToken) await Session.deleteOne({ tokenHash: hashToken(refreshToken) });
+  clearRefreshCookie(res);
+  return res.json({ message: 'Выход выполнен' });
+}));
+
+// POST /api/auth/logout-all
+router.post('/logout-all', authenticate, asyncHandler(async (req, res) => {
+  await Session.deleteMany({ userId: req.userId });
+  clearRefreshCookie(res);
+  return res.json({ message: 'Все сессии завершены' });
 }));
 
 // GET /api/auth/me

@@ -5,7 +5,8 @@ const Rating  = require('../models/Rating');
 const Review  = require('../models/Review');
 const Comment = require('../models/Comment');
 const { validateObjectId } = require('../middleware/validate');
-const { extractBearer, verifyToken } = require('../middleware/security');
+const { extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const { getUserAchievements } = require('../utils/achievements');
 
@@ -34,7 +35,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         // 🐛 ФИКС: приведение к строке для надёжного сравнения
         isOwnProfile = String(decoded.userId) === String(userId);
       } catch { /* игнор */ }

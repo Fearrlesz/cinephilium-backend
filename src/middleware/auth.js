@@ -1,5 +1,6 @@
 const User = require('../models/User');
-const { verifyToken, extractBearer } = require('./security');
+const { verifyAccessToken } = require('../utils/jwt');
+const { extractBearer } = require('./security');
 const { UnauthorizedError, ForbiddenError, AppError } = require('../utils/errors');
 
 const authenticate = async (req, res, next) => {
@@ -7,7 +8,7 @@ const authenticate = async (req, res, next) => {
   if (!token) return next(new UnauthorizedError());
 
   try {
-    const decoded = verifyToken(token);
+    const decoded = verifyAccessToken(token);
     const user = await User.findById(decoded.userId);
     if (!user) return next(new UnauthorizedError('Пользователь не найден'));
 
