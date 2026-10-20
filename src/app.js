@@ -1,17 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
 
-// Безопасность
-const {
-  helmetMiddleware,
-  globalLimiter,
-  bodyLimit,
-  noSqlSanitizer
-} = require('./middleware/security');
-
-// Конфиг
-const corsMiddleware = require('./config/cors');
-
 // Роуты
 const authRoutes     = require('./routes/auth.routes');
 const filmsRoutes    = require('./routes/films.routes');
@@ -30,18 +19,7 @@ mongoose.set('strictQuery', false);
 
 const app = express();
 
-// ===== TRUST PROXY =====
-// Критично для корректной работы express-rate-limit за reverse-proxy (Render, Heroku, nginx и т.п.)
-app.set('trust proxy', 1);
-
-// ===== CORS (до всего остального) =====
-app.use(corsMiddleware);
-
-// ===== БЕЗОПАСНОСТЬ (порядок важен!) =====
-app.use(helmetMiddleware);                    // 1. заголовки
-app.use(globalLimiter);                       // 2. общий лимит запросов
-app.use(express.json({ limit: bodyLimit }));  // 3. парсинг тела с лимитом
-app.use(noSqlSanitizer);                      // 4. санитайз ПОСЛЕ парсинга
+app.use(express.json());
 
 // ===== МАРШРУТЫ =====
 app.use('/api/auth',     authRoutes);

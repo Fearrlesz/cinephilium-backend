@@ -21,5 +21,6 @@ console.log(
 const EXCLUSIVE_NICKNAME = 'Дмитрий';
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
+const IMAGE_PROXY_BASE_URL = process.env.IMAGE_PROXY_BASE_URL || '';
 
-module.exports = { EXCLUSIVE_NICKNAME, PORT, MONGODB_URI };
+module.exports = { EXCLUSIVE_NICKNAME, PORT, MONGODB_URI, IMAGE_PROXY_BASE_URL };

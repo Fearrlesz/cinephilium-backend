@@ -4,7 +4,7 @@ const Comment = require('../models/Comment');
 const Film    = require('../models/Film');
 const { authenticate }     = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { extractBearer, verifyToken } = require('../middleware/security');
 const User = require('../models/User');
 const { addPoints } = require('../utils/points');
 const { existsById, updateAchievements } = require('../utils/helpers');
@@ -16,7 +16,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/comments
-router.post('/', writeLimiter, [
+router.post('/', [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('text').notEmpty().isLength({ max: 1000 }).withMessage('Текст не длиннее 1000 символов'),
   body('parentId').optional().isMongoId().withMessage('Некорректный ID родительского комментария')
@@ -90,7 +90,7 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 }));
 
 // POST /api/comments/:id/like
-router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
+router.post('/:id/like', validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
   try {

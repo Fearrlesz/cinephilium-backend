@@ -4,7 +4,8 @@ const filmSchema = new mongoose.Schema({
   tmdbId:      { type: Number, unique: true },
   title:       { type: String, required: true },
   year:        Number,
-  poster:      String,
+  posterPath:  { type: String, default: '' },
+  poster:      String, // Deprecated; retained for migration compatibility.
   description: { type: String, maxlength: 1000 },
   genres:      [String],
   director:    { type: String, maxlength: 100 },

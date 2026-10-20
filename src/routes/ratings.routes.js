@@ -5,7 +5,6 @@ const Film    = require('../models/Film');
 const User    = require('../models/User');
 const { authenticate }     = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter } = require('../middleware/security');
 const {
   BLOCK_CRITERIA,
   GENRE_PRESETS,
@@ -19,6 +18,7 @@ const {
 } = require('../config/scoring');
 const { addPoints } = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -27,7 +27,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/ratings
-router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next) => {
+router.post('/', authenticate, asyncHandler(async (req, res, next) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
@@ -154,7 +154,10 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
       .populate('filmId')
       .sort({ createdAt: -1 });
 
-    res.json(ratings);
+    res.json(ratings.map(rating => ({
+      ...rating.toObject(),
+      filmId: withPosterUrl(rating.filmId)
+    })));
   } catch (error) {
     throw error;
   }
@@ -167,11 +170,14 @@ router.get('/:id/details', validateObjectId('id'), asyncHandler(async (req, res,
   try {
     const rating = await Rating.findById(req.params.id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster');
+      .populate('filmId', 'title poster posterPath');
 
     if (!rating) throw new NotFoundError('Оценка не найдена');
 
-    res.json(rating);
+    res.json({
+      ...rating.toObject(),
+      filmId: withPosterUrl(rating.filmId)
+    });
   } catch (error) {
     throw error;
   }
