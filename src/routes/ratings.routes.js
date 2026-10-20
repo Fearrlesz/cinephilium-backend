@@ -1,6 +1,5 @@
 const express  = require('express');
 const mongoose = require('mongoose');
-const { validationResult } = require('express-validator');
 const Rating  = require('../models/Rating');
 const Film    = require('../models/Film');
 const User    = require('../models/User');
@@ -21,37 +20,39 @@ const {
 const { addPoints } = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
+
 const router = express.Router();
 
 // POST /api/ratings
-router.post('/', writeLimiter, authenticate, async (req, res) => {
+router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
     if (!filmId || !mongoose.Types.ObjectId.isValid(filmId)) {
-      return res.status(400).json({ message: 'Некорректный filmId' });
+      throw new ValidationError('Некорректный filmId');
     }
 
     if (!scores || typeof scores !== 'object') {
-      return res.status(400).json({ message: 'scores обязателен и должен быть объектом' });
+      throw new ValidationError('scores обязателен и должен быть объектом');
     }
 
     for (const [block, crits] of Object.entries(BLOCK_CRITERIA)) {
       if (!scores[block] || typeof scores[block] !== 'object') {
-        return res.status(400).json({ message: `Блок ${block} отсутствует или некорректен` });
+        throw new ValidationError(`Блок ${block} отсутствует или некорректен`);
       }
       for (const crit of crits) {
         const val = scores[block][crit];
         if (!Number.isFinite(val) || val < 1 || val > 10) {
-          return res.status(400).json({
-            message: `Некорректное значение ${block}.${crit} (нужно 1–10)`
-          });
+          throw new ValidationError(`Некорректное значение ${block}.${crit} (нужно 1–10)`);
         }
       }
     }
 
     if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
-      return res.status(400).json({ message: 'vibe должен быть от 1 до 10' });
+      throw new ValidationError('vibe должен быть от 1 до 10');
     }
 
     let weightsArray;
@@ -62,7 +63,7 @@ router.post('/', writeLimiter, authenticate, async (req, res) => {
       const allValid = blockWeights.every(w => Number.isFinite(w) && w >= 0 && w <= 100);
       const sum = blockWeights.reduce((a, b) => a + b, 0);
       if (!allValid || sum !== 100) {
-        return res.status(400).json({ message: 'Сумма весов блоков должна быть строго 100' });
+        throw new ValidationError('Сумма весов блоков должна быть строго 100');
       }
       weightsArray = blockWeights;
     } else if (blockWeights && typeof blockWeights === 'object') {
@@ -70,7 +71,7 @@ router.post('/', writeLimiter, authenticate, async (req, res) => {
       const allValid = arr.every(w => Number.isFinite(w) && w >= 0 && w <= 100);
       const sum = arr.reduce((a, b) => a + b, 0);
       if (!allValid || sum !== 100) {
-        return res.status(400).json({ message: 'Сумма весов блоков должна быть строго 100' });
+        throw new ValidationError('Сумма весов блоков должна быть строго 100');
       }
       weightsArray = arr;
     } else {
@@ -83,13 +84,13 @@ router.post('/', writeLimiter, authenticate, async (req, res) => {
     try {
       technicalScore = calculateTechnicalScore(scores, weights);
     } catch (e) {
-      return res.status(400).json({ message: e.message });
+      throw new ValidationError(e.message);
     }
 
     const combinedScore = roundTenth(technicalScore * TECHNICAL_WEIGHT + vibe * VIBE_WEIGHT);
 
     const film = await Film.findById(filmId);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+    if (!film) throw new NotFoundError('Фильм не найден');
 
     const existingRating = await Rating.findOne({ userId: req.userId, filmId });
     const isNew = !existingRating;
@@ -142,13 +143,12 @@ router.post('/', writeLimiter, authenticate, async (req, res) => {
       finalScore: combinedScore
     });
   } catch (err) {
-    console.error('Ошибка сохранения оценки:', err);
-    res.status(500).json({ message: 'Ошибка сервера' });
+    throw err;
   }
-});
+}));
 
 // GET /api/ratings/user
-router.get('/user', authenticate, async (req, res) => {
+router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
   try {
     const ratings = await Rating.find({ userId: req.userId })
       .populate('filmId')
@@ -156,28 +156,25 @@ router.get('/user', authenticate, async (req, res) => {
 
     res.json(ratings);
   } catch (error) {
-    console.error('Ошибка получения оценок:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/ratings/:id/details
-router.get('/:id/details', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id/details', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const rating = await Rating.findById(req.params.id)
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster');
 
-    if (!rating) return res.status(404).json({ error: 'Оценка не найдена' });
+    if (!rating) throw new NotFoundError('Оценка не найдена');
 
     res.json(rating);
   } catch (error) {
-    console.error('Ошибка загрузки деталей:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

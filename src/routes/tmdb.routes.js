@@ -1,12 +1,15 @@
 const express = require('express');
 
+const asyncHandler = require('../utils/asyncHandler');
+const { ValidationError } = require('../utils/errors');
+
 const router = express.Router();
 
 // GET /api/tmdb/search
-router.get('/search', async (req, res) => {
+router.get('/search', asyncHandler(async (req, res, next) => {
   const query = req.query.query || req.body.query;
   if (!query || query.trim() === '') {
-    return res.status(400).json({ error: 'Введите поисковый запрос' });
+    throw new ValidationError('Введите поисковый запрос');
   }
 
   try {
@@ -20,9 +23,8 @@ router.get('/search', async (req, res) => {
     const data = await response.json();
     res.json(data);
   } catch (error) {
-    console.error('Ошибка поиска в TMDB:', error);
-    res.status(500).json({ error: 'Ошибка поиска фильмов' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

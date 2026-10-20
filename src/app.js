@@ -23,6 +23,8 @@ const adminRoutes    = require('./routes/admin.routes');
 const tmdbRoutes     = require('./routes/tmdb.routes');
 const eventsRoutes   = require('./routes/events.routes');
 const topRoutes      = require('./routes/top.routes');
+const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const asyncHandler = require('./utils/asyncHandler');
 
 mongoose.set('strictQuery', false);
 
@@ -57,5 +59,14 @@ app.use('/api/top',      topRoutes);
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+if (process.env.NODE_ENV === 'test') {
+  app.get('/api/test/internal-error', asyncHandler(async () => {
+    throw new Error('boom');
+  }));
+}
+
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 module.exports = app;

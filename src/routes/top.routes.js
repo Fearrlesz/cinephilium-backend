@@ -1,10 +1,12 @@
 const express = require('express');
 const User    = require('../models/User');
 
+const asyncHandler = require('../utils/asyncHandler');
+
 const router = express.Router();
 
 // GET /api/top/users
-router.get('/users', async (req, res) => {
+router.get('/users', asyncHandler(async (req, res, next) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
 
@@ -38,9 +40,8 @@ router.get('/users', async (req, res) => {
 
     res.json(users);
   } catch (error) {
-    console.error('Ошибка загрузки топа:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

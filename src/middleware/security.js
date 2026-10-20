@@ -4,6 +4,13 @@
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
+const { AppError } = require('../utils/errors');
+
+function rateLimitHandler(message) {
+  return (_req, _res, next) => {
+    next(new AppError('RATE_LIMIT_EXCEEDED', message, 429));
+  };
+}
 
 /* 1. Helmet */
 const helmetMiddleware = helmet({
@@ -18,7 +25,7 @@ const globalLimiter = rateLimit({
   limit: 200,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Слишком много запросов, попробуйте позже' }
+  handler: rateLimitHandler('Слишком много запросов, попробуйте позже')
 });
 
 /* 3. Жёсткий лимит для авторизации */
@@ -28,7 +35,7 @@ const authLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   skipSuccessfulRequests: true,
-  message: { error: 'Слишком много попыток входа. Попробуйте через 15 минут' }
+  handler: rateLimitHandler('Слишком много попыток входа. Попробуйте через 15 минут')
 });
 
 /* 4. Лимит для записи */
@@ -37,7 +44,7 @@ const writeLimiter = rateLimit({
   limit: 30,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  message: { error: 'Слишком много действий, замедлитесь' }
+  handler: rateLimitHandler('Слишком много действий, замедлитесь')
 });
 
 /* 5. Ограничение размера JSON-тела */
