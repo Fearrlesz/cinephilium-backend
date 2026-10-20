@@ -5,7 +5,6 @@ const Film    = require('../models/Film');
 const User    = require('../models/User');
 const { authenticate }     = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter } = require('../middleware/security');
 const {
   BLOCK_CRITERIA,
   GENRE_PRESETS,
@@ -18,8 +17,8 @@ const {
   weightsObjectToArray
 } = require('../config/scoring');
 const { addPoints } = require('../utils/points');
-const { withPosterUrl } = require('../utils/poster');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -28,7 +27,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/ratings
-router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next) => {
+router.post('/', authenticate, asyncHandler(async (req, res, next) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 

@@ -6,7 +6,7 @@ const Film    = require('../models/Film');
 const User    = require('../models/User');
 const { authenticate }     = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { extractBearer, verifyToken } = require('../middleware/security');
 const { addPoints } = require('../utils/points');
 const { updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
@@ -18,7 +18,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/reviews
-router.post('/', writeLimiter, [
+router.post('/', [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('ratingId').isMongoId().withMessage('Некорректный ID оценки'),
   body('title').notEmpty().isLength({ max: 100 }).withMessage('Заголовок не длиннее 100 символов'),
@@ -133,7 +133,7 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 }));
 
 // POST /api/reviews/:id/like
-router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
+router.post('/:id/like', validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
   try {

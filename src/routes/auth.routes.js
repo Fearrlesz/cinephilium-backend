@@ -3,7 +3,6 @@ const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const { body } = require('express-validator');
 const User     = require('../models/User');
-const { authLimiter } = require('../middleware/security');
 const { authenticate } = require('../middleware/auth');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
@@ -13,7 +12,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/auth/register
-router.post('/register', authLimiter, [
+router.post('/register', [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 6 }).withMessage('Пароль должен быть минимум 6 символов'),
   body('nickname').notEmpty().isLength({ max: 50 }).withMessage('Никнейм не длиннее 50 символов')
@@ -44,7 +43,7 @@ router.post('/register', authLimiter, [
 }));
 
 // POST /api/auth/login
-router.post('/login', authLimiter, [
+router.post('/login', [
   body('email').isEmail().normalizeEmail(),
   body('password').notEmpty()
 ], asyncHandler(async (req, res, next) => {

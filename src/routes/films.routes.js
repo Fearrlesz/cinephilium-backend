@@ -5,7 +5,7 @@ const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { extractBearer, verifyToken } = require('../middleware/security');
 const { roundTenth } = require('../config/scoring');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
@@ -256,7 +256,7 @@ router.get('/', asyncHandler(async (req, res, next) => {
 }));
 
 // POST /api/films/import
-router.post('/import', writeLimiter, authenticate, [
+router.post('/import', authenticate, [
   body('tmdbId').isInt({ min: 1 }).withMessage('Некорректный ID фильма')
 ], asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
