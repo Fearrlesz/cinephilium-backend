@@ -223,12 +223,13 @@ test('unverified users cannot create reviews and verified users can', async () =
     assert.equal((await response.json()).error.code, 'EMAIL_NOT_VERIFIED');
   });
 
-  const verifiedUser = { _id: 'verified-user', emailVerified: true, isAdmin: false };
+  const verifiedUser = { _id: new mongoose.Types.ObjectId(), emailVerified: true, isAdmin: false };
   await withOverrides([
     [User, 'findById', async () => verifiedUser],
     [Film, 'findById', async () => ({ _id: 'film-1' })],
     [Rating, 'findOne', async () => ({ _id: 'rating-1' })],
     [Review, 'findOne', async () => null],
+    [User, 'updateOne', async () => ({ modifiedCount: 1 })],
     [Review.prototype, 'save', async function save() {}],
     [Review, 'findById', () => ({ populate() { return this; } })]
   ], async () => {

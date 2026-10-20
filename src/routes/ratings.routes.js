@@ -18,6 +18,7 @@ const {
   weightsObjectToArray
 } = require('../config/scoring');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -112,6 +113,7 @@ router.post('/', writeLimiter, authenticate, requireVerified, asyncHandler(async
     );
 
     if (isNew) {
+      await incCounter(req.userId, 'ratings', 1);
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
 

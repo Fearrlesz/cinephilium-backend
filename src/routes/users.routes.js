@@ -94,12 +94,12 @@ router.get('/:id/achievements', validateObjectId('id'), asyncHandler(async (req,
   try {
     const userId = req.params.id;
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    const user = await User.findById(userId).select('achievements nickname');
+    const user = await User.findById(userId).select('achievements nickname counters');
     if (!user) throw new NotFoundError('Пользователь не найден');
 
-    const ratingsCount  = await Rating.countDocuments({ userId });
-    const reviewsCount  = await Review.countDocuments({ userId, status: 'approved' });
-    const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
+    const ratingsCount  = user.counters?.ratings || 0;
+    const reviewsCount  = user.counters?.reviewsApproved || 0;
+    const commentsCount = user.counters?.commentsApproved || 0;
 
     const allPossible = await getUserAchievements(
       userObjectId,

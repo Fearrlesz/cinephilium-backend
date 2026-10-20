@@ -1,8 +1,5 @@
 const mongoose = require('mongoose');
 const User     = require('../models/User');
-const Rating   = require('../models/Rating');
-const Review   = require('../models/Review');
-const Comment  = require('../models/Comment');
 const Event    = require('../models/Event');
 const { getUserAchievements } = require('./achievements');
 
@@ -20,9 +17,11 @@ async function createEvent(type, user, film, filmId, score = null, contentId = n
 
 async function updateAchievements(userId) {
   try {
-    const ratingsCount  = await Rating.countDocuments({ userId });
-    const reviewsCount  = await Review.countDocuments({ userId, status: 'approved' });
-    const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
+    const countersUser = await User.findById(userId).select('counters').lean();
+    if (!countersUser) return;
+    const ratingsCount  = countersUser.counters?.ratings || 0;
+    const reviewsCount  = countersUser.counters?.reviewsApproved || 0;
+    const commentsCount = countersUser.counters?.commentsApproved || 0;
 
     const allPossible = await getUserAchievements(
       userId,

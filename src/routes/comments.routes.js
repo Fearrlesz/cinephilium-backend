@@ -8,6 +8,7 @@ const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const User = require('../models/User');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { existsById, updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -37,6 +38,7 @@ router.post('/', writeLimiter, [
 
     const comment = new Comment({ userId: req.userId, filmId, text, parentId, status: 'pending' });
     await comment.save();
+    await incCounter(req.userId, 'comments', 1);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
@@ -109,6 +111,7 @@ router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asy
     comment.likes.push(req.userId);
     await comment.save();
 
+    await incCounter(comment.userId, 'likesReceived', 1);
     const points = req.isAdmin ? 3 : 1;
     await addPoints(comment.userId, req.userId, 'like', points, comment._id);
     await updateAchievements(comment.userId);

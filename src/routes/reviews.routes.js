@@ -9,6 +9,7 @@ const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -43,6 +44,7 @@ router.post('/', writeLimiter, [
 
     const review = new Review({ userId: req.userId, filmId, ratingId, title, text, status: 'pending' });
     await review.save();
+    await incCounter(req.userId, 'reviews', 1);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -139,6 +141,7 @@ router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asy
     review.likes.push(req.userId);
     await review.save();
 
+    await incCounter(review.userId, 'likesReceived', 1);
     const points = req.isAdmin ? 20 : 5;
     await addPoints(review.userId, req.userId, 'like', points, review._id);
     await updateAchievements(review.userId);

@@ -5,6 +5,7 @@ const Comment = require('../models/Comment');
 const Review  = require('../models/Review');
 const { authenticate, isAdmin } = require('../middleware/auth');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -84,13 +85,13 @@ router.get('/pending/reviews', authenticate, isAdmin, asyncHandler(async (req, r
 // PUT /api/admin/comments/:id/approve
 router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const comment = await Comment.findByIdAndUpdate(
-      req.params.id,
-      { status: 'approved' },
-      { new: true }
-    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
-
-    if (!comment) throw new NotFoundError('Комментарий не найден');
+    const before = await Comment.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Комментарий не найден');
+    await Comment.updateOne({ _id: req.params.id }, { $set: { status: 'approved' } });
+    const comment = await Comment.findById(req.params.id)
+      .populate('userId', 'nickname isAdmin')
+      .populate('filmId', 'title');
+    if (before.status !== 'approved') await incCounter(before.userId, 'commentsApproved', 1);
 
     const authorIsAdmin = comment.userId?.isAdmin || false;
     const authorPoints = authorIsAdmin ? 10 : 2;
@@ -108,13 +109,11 @@ router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (r
 // PUT /api/admin/comments/:id/reject
 router.put('/comments/:id/reject', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const comment = await Comment.findByIdAndUpdate(
-      req.params.id,
-      { status: 'rejected' },
-      { new: true }
-    ).populate('userId', 'nickname');
-
-    if (!comment) throw new NotFoundError('Комментарий не найден');
+    const before = await Comment.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Комментарий не найден');
+    await Comment.updateOne({ _id: req.params.id }, { $set: { status: 'rejected' } });
+    const comment = await Comment.findById(req.params.id).populate('userId', 'nickname');
+    if (before.status === 'approved') await incCounter(before.userId, 'commentsApproved', -1);
 
     res.json(comment);
   } catch (error) {
@@ -125,13 +124,13 @@ router.put('/comments/:id/reject', authenticate, isAdmin, asyncHandler(async (re
 // PUT /api/admin/reviews/:id/approve
 router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const review = await Review.findByIdAndUpdate(
-      req.params.id,
-      { status: 'approved' },
-      { new: true }
-    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
-
-    if (!review) throw new NotFoundError('Рецензия не найдена');
+    const before = await Review.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Рецензия не найдена');
+    await Review.updateOne({ _id: req.params.id }, { $set: { status: 'approved' } });
+    const review = await Review.findById(req.params.id)
+      .populate('userId', 'nickname isAdmin')
+      .populate('filmId', 'title');
+    if (before.status !== 'approved') await incCounter(before.userId, 'reviewsApproved', 1);
 
     const authorIsAdmin = review.userId?.isAdmin || false;
     const authorPoints = authorIsAdmin ? 50 : 30;
@@ -149,13 +148,13 @@ router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (re
 // PUT /api/admin/reviews/:id/reject
 router.put('/reviews/:id/reject', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const review = await Review.findByIdAndUpdate(
-      req.params.id,
-      { status: 'rejected' },
-      { new: true }
-    ).populate('userId', 'nickname').populate('filmId', 'title');
-
-    if (!review) throw new NotFoundError('Рецензия не найдена');
+    const before = await Review.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Рецензия не найдена');
+    await Review.updateOne({ _id: req.params.id }, { $set: { status: 'rejected' } });
+    const review = await Review.findById(req.params.id)
+      .populate('userId', 'nickname')
+      .populate('filmId', 'title');
+    if (before.status === 'approved') await incCounter(before.userId, 'reviewsApproved', -1);
 
     res.json(review);
   } catch (error) {
