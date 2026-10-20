@@ -1,6 +1,6 @@
 const User = require('../models/User');
 const { verifyToken, extractBearer } = require('./security');
-const { UnauthorizedError, ForbiddenError } = require('../utils/errors');
+const { UnauthorizedError, ForbiddenError, AppError } = require('../utils/errors');
 
 const authenticate = async (req, res, next) => {
   const token = extractBearer(req);
@@ -28,4 +28,11 @@ const isAdmin = async (req, res, next) => {
   return next();
 };
 
-module.exports = { authenticate, isAdmin };
+function requireVerified(req, res, next) {
+  if (!req.user?.emailVerified) {
+    return next(new AppError('EMAIL_NOT_VERIFIED', 'Подтвердите email', 403));
+  }
+  return next();
+}
+
+module.exports = { authenticate, isAdmin, requireVerified };

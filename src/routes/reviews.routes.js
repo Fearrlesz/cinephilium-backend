@@ -4,7 +4,7 @@ const Review  = require('../models/Review');
 const Rating  = require('../models/Rating');
 const Film    = require('../models/Film');
 const User    = require('../models/User');
-const { authenticate }     = require('../middleware/auth');
+const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
 const { addPoints } = require('../utils/points');
@@ -25,7 +25,7 @@ router.post('/', writeLimiter, [
     .notEmpty().withMessage('Текст рецензии обязателен')
     .isLength({ min: 450 }).withMessage('Текст рецензии должен быть не короче 450 символов')
     .isLength({ max: 15000 }).withMessage('Текст рецензии не длиннее 15000 символов')
-], authenticate, asyncHandler(async (req, res, next) => {
+], authenticate, requireVerified, asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
   try {

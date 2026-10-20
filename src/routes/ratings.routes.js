@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const Rating  = require('../models/Rating');
 const Film    = require('../models/Film');
 const User    = require('../models/User');
-const { authenticate }     = require('../middleware/auth');
+const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter } = require('../middleware/security');
 const {
@@ -27,7 +27,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/ratings
-router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next) => {
+router.post('/', writeLimiter, authenticate, requireVerified, asyncHandler(async (req, res, next) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 

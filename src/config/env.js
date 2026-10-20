@@ -21,5 +21,27 @@ console.log(
 const EXCLUSIVE_NICKNAME = 'Дмитрий';
 const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+const SMTP_FROM = process.env.SMTP_FROM;
+const EMAIL_CODE_TTL_MIN = Number(process.env.EMAIL_CODE_TTL_MIN || 10);
+const EMAIL_RESEND_COOLDOWN_SEC = Number(process.env.EMAIL_RESEND_COOLDOWN_SEC || 60);
+const EMAIL_RESEND_MAX_PER_HOUR = Number(process.env.EMAIL_RESEND_MAX_PER_HOUR || 3);
 
-module.exports = { EXCLUSIVE_NICKNAME, PORT, MONGODB_URI };
+module.exports = {
+  EXCLUSIVE_NICKNAME,
+  PORT,
+  MONGODB_URI,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_SECURE,
+  SMTP_USER,
+  SMTP_PASS,
+  SMTP_FROM,
+  EMAIL_CODE_TTL_MIN,
+  EMAIL_RESEND_COOLDOWN_SEC,
+  EMAIL_RESEND_MAX_PER_HOUR
+};

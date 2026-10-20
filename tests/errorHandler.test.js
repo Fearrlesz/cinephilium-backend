@@ -47,7 +47,7 @@ test('registration validation reports the email field', async () => {
 
 test('duplicate registration returns conflict', async () => {
   const originalFindOne = User.findOne;
-  User.findOne = async () => ({ _id: 'existing-user' });
+  User.findOne = async () => ({ _id: 'existing-user', emailVerified: true });
   try {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
