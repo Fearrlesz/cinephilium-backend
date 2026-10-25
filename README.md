@@ -65,7 +65,7 @@ npm start                 # http://localhost:3000/api/health
 | `JWT_REFRESH_TTL_DAYS` | `30` | |
 | `COOKIE_DOMAIN` | не задан | host-only cookie; задавать только при необходимости |
 | `COOKIE_SECURE` | `NODE_ENV === 'production'` | в проде обязательно `true` (HTTPS) |
-| `IMAGE_PROXY_BASE_URL` | — | если задан, постеры идут через `/api/tmdb-image` |
+| `IMAGE_PROXY_BASE_URL` | — | адрес **бэкенда** для ссылок на `/api/tmdb-image`; пусто — берётся origin входящего запроса. Домен фронтенда сюда попасть не должен (если попал и фронт на другом домене — сервер сам подставит origin запроса) |
 | `REGISTRATION_MODE` | `invite` | `invite` — только по коду от админа, `open` — свободная регистрация |
 | `INVITE_TTL_DAYS` | `0` | срок жизни выданного инвайта в днях; 0 — бессрочно |
 | `PASSWORD_RESET_TTL_MIN` | `30` | сколько живёт ссылка сброса пароля от админа |
@@ -77,7 +77,7 @@ npm start                 # http://localhost:3000/api/health
 
 ```
 src/server.js          точка входа: env → Mongo → listen
-src/app.js             сборка Express: cors → helmet → limiter → json → cookie → sanitizer → роуты → 404 → ошибки
+src/app.js             сборка Express: cors → helmet → постеры → limiter → json → cookie → sanitizer → роуты → 404 → ошибки
 src/config/            env.js (конфиг), cors.js, scoring.js (формулы)
 src/middleware/        auth.js, security.js, errorHandler.js, validate.js
 src/models/            User, Invite, Film, Rating, Review, Comment, Event, Action, Session
@@ -92,17 +92,24 @@ tests/                 node:test, у каждого файла своя БД
 
 1. `cors` — до всего, чтобы ошибки тоже получали CORS-заголовки;
 2. `helmet` — заголовки безопасности;
-3. `globalLimiter` — 200 запросов/мин на IP;
-4. `express.json({ limit: '100kb' })`;
-5. `cookieParser()` — нужен для refresh;
-6. `noSqlSanitizer` — **после** парсинга: рекурсивно вырезает ключи, начинающиеся с `$`,
+3. прокси постеров `/api/tmdb-image` и `/api/poster/:size/*` — **до** общего лимита,
+   со своим `imageLimiter` (1200/мин): на страницу уходит 20–40 картинок, и общий лимит
+   они выжигают за пару экранов;
+4. `globalLimiter` — 200 запросов/мин на IP;
+5. `express.json({ limit: '100kb' })`;
+6. `cookieParser()` — нужен для refresh;
+7. `noSqlSanitizer` — **после** парсинга: рекурсивно вырезает ключи, начинающиеся с `$`,
    и ключи с точкой (защита от `$ne`, `$where`, `a.b`-инъекций);
-7. роуты;
-8. `notFoundHandler` → JSON 404;
-9. `errorHandler` → единый формат ошибок.
+8. роуты;
+9. `notFoundHandler` → JSON 404;
+10. `errorHandler` → единый формат ошибок.
 
-`app.set('trust proxy', 1)` — приложение живёт за одним прокси (Render), поэтому `req.ip`
-берётся из `X-Forwarded-For`, а rate-limit считает по реальному клиенту.
+`app.set('trust proxy', 1)` — приложение живёт за одним прокси (Render), а `req.ip` на
+Render/Cloudflare оказывается адресом edge-ноды Cloudflare, общим на тысячи людей.
+Поэтому все лимиты считают по `clientIp()`: сначала `cf-connecting-ip` (Cloudflare),
+потом `x-real-ip` (свой nginx), и только если их нет — `req.ip`.
+Если бэкенд когда-нибудь окажется открыт в интернет **без** прокси, эти заголовки нужно
+вырезать на входе (иначе клиент подделает IP и обойдёт лимиты).
 
 ### Поток запроса на примере оценки
 
@@ -316,7 +323,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test
 ```
 
-97 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
+103 теста на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
 поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
 
 | Файл | Тестов |
@@ -326,7 +333,7 @@ npm test
 | `tests/contact.test.js` | 11 |
 | `tests/counters.test.js` | 15 |
 | `tests/errorHandler.test.js` | 7 |
-| `tests/poster.test.js` | 9 |
+| `tests/poster.test.js` | 15 |
 | `tests/regression.test.js` | 28 |
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
@@ -399,7 +406,23 @@ node scripts/reconcile-counters.js
 1. Build: `npm ci`; Start: `npm start`.
 2. Env: все обязательные + `NODE_ENV=production`, `COOKIE_SECURE=true`,
    `CORS_ORIGIN=https://<фронт>`, `CLIENT_URL=https://<фронт>`, `COOKIE_DOMAIN` не задавать.
+   `IMAGE_PROXY_BASE_URL` можно не задавать вовсе — тогда постеры ссылаются на origin
+   входящего запроса, то есть на этот же бэкенд.
 3. После первого деплоя прогнать миграции из §11.
+
+**Если постеры показывают заглушку:**
+
+1. `image.tmdb.org` в РФ недоступен — браузер обязан ходить через `/api/tmdb-image`.
+   Проверьте, что `film.posterUrl` в ответе API указывает на **домен бэкенда**:
+   `curl -s https://<бэкенд>/api/films?limit=1 | grep posterUrl`.
+2. Если там домен фронтенда (`*.vercel.app`) — в `IMAGE_PROXY_BASE_URL` записан не тот
+   адрес. Удалите переменную или укажите бэкенд: при старте сервер предупредит
+   («IMAGE_PROXY_BASE_URL совпадает с доменом фронтенда»), а при запросе с другого
+   домена сам подставит origin бэкенда.
+3. Проверьте сам прокси: `curl -I "https://<бэкенд>/api/tmdb-image?size=w500&path=%2F<файл>.jpg"`
+   должен вернуть `200 image/jpeg`, а не `404/502/HTML`.
+4. `429` в ответах прокси — сработал лимит; на постеры он отдельный (1200/мин на IP),
+   общий API-лимит в 200/мин их больше не считает.
 
 **Фронтенд (Vercel):**
 

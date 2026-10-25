@@ -5,7 +5,8 @@ process.env.JWT_ACCESS_SECRET = 'test-jwt-access-secret';
 process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.TMDB_API_KEY = 'test-tmdb-key';
 process.env.ADMIN_SECRET_KEY = 'test-admin-key';
-process.env.IMAGE_PROXY_BASE_URL = 'https://film.ru';
+// Фронтенд (https://film.ru) и бэкенд (https://api.film.ru) — разные домены.
+process.env.IMAGE_PROXY_BASE_URL = 'https://api.film.ru';
 
 const { after, before, test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -43,7 +44,7 @@ after(async () => {
 test('buildPosterUrl uses the configured image proxy', () => {
   assert.equal(
     buildPosterUrl('/abc.jpg'),
-    'https://film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg'
+    'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg'
   );
 });
 
@@ -80,7 +81,7 @@ test('GET /api/films/:id includes a posterUrl based on posterPath', async () => 
     assert.equal(response.status, 200);
     assert.equal(
       film.posterUrl,
-      'https://film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg'
+      'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg'
     );
     assert.equal(film.posterPath, '/abc.jpg');
   } finally {
@@ -152,7 +153,7 @@ test('POST /api/films/import persists posterPath and leaves poster empty', async
     assert.equal(response.status, 201);
     assert.equal(body.film.posterPath, '/abc.jpg');
     // poster сохранён для обратной совместимости: старый фронтенд читает его как готовый URL
-    assert.equal(body.film.poster, 'https://film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg');
+    assert.equal(body.film.poster, 'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg');
   } finally {
     Film.findOne = originalFindOne;
     Film.prototype.save = originalSave;
@@ -200,7 +201,7 @@ test('poster migration fills missing paths and skips films already migrated', as
   assert.deepEqual(messages, ['migrated: 2, skipped: 1']);
 });
 
-async function invokeImageHandler(query, method = 'GET', upstreamFetch) {
+async function invokeImageHandler(query, method = 'GET', upstreamFetch, headers = {}) {
   const response = new PassThrough();
   response.statusCode = 0;
   response.headers = {};
@@ -214,7 +215,7 @@ async function invokeImageHandler(query, method = 'GET', upstreamFetch) {
   const originalFetch = global.fetch;
   if (upstreamFetch) global.fetch = upstreamFetch;
   try {
-    await tmdbImageHandler({ method, query }, response);
+    await tmdbImageHandler({ method, query, headers }, response);
   } finally {
     global.fetch = originalFetch;
   }
@@ -256,4 +257,191 @@ test('TMDB image proxy streams image bytes and sets cache headers', async () => 
     'public, max-age=31536000, immutable'
   );
   assert.equal(response.headers.vary, 'Accept-Encoding');
+});
+
+test('buildPosterUrl нормализует базу прокси (слэш и случайный /api)', () => {
+  const originalBase = process.env.IMAGE_PROXY_BASE_URL;
+
+  try {
+    process.env.IMAGE_PROXY_BASE_URL = 'https://api.film.ru/';
+    assert.equal(
+      buildPosterUrl('/abc.jpg'),
+      'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg'
+    );
+
+    process.env.IMAGE_PROXY_BASE_URL = 'https://api.film.ru/api/';
+    assert.equal(
+      buildPosterUrl('/abc.jpg', 'w342'),
+      'https://api.film.ru/api/tmdb-image?size=w342&path=%2Fabc.jpg'
+    );
+  } finally {
+    process.env.IMAGE_PROXY_BASE_URL = originalBase;
+  }
+});
+
+test('легаси-poster с прямой ссылкой TMDB отдаётся через прокси', async () => {
+  const filmId = '507f1f77bcf86cd799439013';
+  const originalFindById = Film.findById;
+  const originalAggregate = Rating.aggregate;
+  Film.findById = async () => ({
+    _id: filmId,
+    posterPath: '',
+    poster: 'https://image.tmdb.org/t/p/w500/legacy.jpg',
+    toObject() {
+      return {
+        _id: filmId,
+        posterPath: this.posterPath,
+        poster: this.poster
+      };
+    }
+  });
+  Rating.aggregate = async () => [];
+
+  try {
+    const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
+    const film = await response.json();
+
+    assert.equal(response.status, 200);
+    // Старый фронтенд рендерит film.poster напрямую: там не должно остаться TMDB.
+    assert.equal(
+      film.poster,
+      'https://api.film.ru/api/tmdb-image?size=w500&path=%2Flegacy.jpg'
+    );
+    assert.equal(film.posterPath, '/legacy.jpg');
+  } finally {
+    Film.findById = originalFindById;
+    Rating.aggregate = originalAggregate;
+  }
+});
+
+test('без IMAGE_PROXY_BASE_URL база прокси берётся из origin запроса', async () => {
+  const originalBase = process.env.IMAGE_PROXY_BASE_URL;
+  delete process.env.IMAGE_PROXY_BASE_URL;
+  const filmId = '507f1f77bcf86cd799439014';
+  const originalFindById = Film.findById;
+  const originalAggregate = Rating.aggregate;
+  Film.findById = async () => ({
+    _id: filmId,
+    posterPath: '/request-origin.jpg',
+    poster: '',
+    toObject() {
+      return { _id: filmId, posterPath: this.posterPath, poster: this.poster };
+    }
+  });
+  Rating.aggregate = async () => [];
+
+  try {
+    const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
+    const film = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(film.posterUrl, `${baseUrl}/api/tmdb-image?size=w500&path=%2Frequest-origin.jpg`);
+  } finally {
+    process.env.IMAGE_PROXY_BASE_URL = originalBase;
+    Film.findById = originalFindById;
+    Rating.aggregate = originalAggregate;
+  }
+});
+
+test('домен фронтенда в IMAGE_PROXY_BASE_URL игнорируется: берётся origin запроса', async () => {
+  const originalBase = process.env.IMAGE_PROXY_BASE_URL;
+  const originalCors = process.env.CORS_ORIGIN;
+  const originalClient = process.env.CLIENT_URL;
+  const frontend = 'https://cinephilium-frontendnew.vercel.app';
+
+  process.env.IMAGE_PROXY_BASE_URL = frontend;
+  process.env.CORS_ORIGIN = frontend;
+  process.env.CLIENT_URL = frontend;
+
+  const filmId = '507f1f77bcf86cd799439015';
+  const originalFindById = Film.findById;
+  const originalAggregate = Rating.aggregate;
+  Film.findById = async () => ({
+    _id: filmId,
+    posterPath: '/front-host.jpg',
+    poster: '',
+    toObject() {
+      return { _id: filmId, posterPath: this.posterPath, poster: this.poster };
+    }
+  });
+  Rating.aggregate = async () => [];
+
+  try {
+    const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
+    const film = await response.json();
+    assert.equal(response.status, 200);
+    // /api/tmdb-image на Vercel не существует — ссылка должна идти на бэкенд.
+    assert.equal(
+      film.posterUrl,
+      `${baseUrl}/api/tmdb-image?size=w500&path=%2Ffront-host.jpg`
+    );
+  } finally {
+    process.env.IMAGE_PROXY_BASE_URL = originalBase;
+    process.env.CORS_ORIGIN = originalCors;
+    process.env.CLIENT_URL = originalClient;
+    Film.findById = originalFindById;
+    Rating.aggregate = originalAggregate;
+  }
+});
+
+test('прокси постеров кэширует байты и отдаёт 304 по If-None-Match', async () => {
+  tmdbImageHandler.clearCache();
+  const originalFetch = global.fetch;
+  let upstreamCalls = 0;
+  global.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response(Buffer.from('cached-image-bytes'), {
+      headers: { 'content-type': 'image/jpeg', 'content-length': '18' }
+    });
+  };
+
+  try {
+    const first = await invokeImageHandler({ path: '/cached.jpg', size: 'w342' });
+    const second = await invokeImageHandler({ path: '/cached.jpg', size: 'w342' });
+
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.equal(second.body, 'cached-image-bytes');
+    assert.equal(upstreamCalls, 1, 'второй запрос должен прийти из кэша');
+    assert.ok(first.headers.etag, 'ETag обязателен для условных запросов');
+
+    const notModified = await invokeImageHandler(
+      { path: '/cached.jpg', size: 'w342' },
+      'GET',
+      undefined,
+      { 'if-none-match': first.headers.etag }
+    );
+    assert.equal(notModified.statusCode, 304);
+    assert.equal(notModified.body, '');
+  } finally {
+    global.fetch = originalFetch;
+    tmdbImageHandler.clearCache();
+  }
+});
+
+test('постеры не упираются в общий лимит API (200/мин)', async () => {
+  tmdbImageHandler.clearCache();
+  const originalFetch = global.fetch;
+  let upstreamCalls = 0;
+  global.fetch = async () => {
+    upstreamCalls += 1;
+    return new Response(Buffer.from('img'), {
+      headers: { 'content-type': 'image/jpeg', 'content-length': '3' }
+    });
+  };
+
+  try {
+    const url = `${baseUrl}/api/tmdb-image?size=w45&path=%2Fgrid.jpg`;
+    const responses = await Promise.all(
+      Array.from({ length: 210 }, () => requestFetch(url))
+    );
+    const statuses = responses.map(response => response.status);
+    assert.ok(
+      statuses.every(status => status === 200),
+      `часть постеров получила не 200: ${[...new Set(statuses)].join(', ')}`
+    );
+    assert.equal(upstreamCalls, 1, 'одинаковые постеры должны склеиваться');
+  } finally {
+    global.fetch = originalFetch;
+    tmdbImageHandler.clearCache();
+  }
 });

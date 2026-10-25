@@ -7,7 +7,8 @@ process.env.ADMIN_SECRET_KEY = 'test-admin-key';
 process.env.CORS_ORIGIN = 'https://film.ru';
 process.env.COOKIE_DOMAIN = 'localhost';
 process.env.COOKIE_SECURE = 'false';
-process.env.IMAGE_PROXY_BASE_URL = 'https://film.ru';
+// Бэкенд и фронтенд — разные домены: прокси постеров живёт на домене бэкенда.
+process.env.IMAGE_PROXY_BASE_URL = 'https://api.film.ru';
 
 const { after, before, beforeEach, test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -287,7 +288,7 @@ test('детали фильма отдают posterUrl из posterPath', async (
 
   const response = await call(`/api/films/${film._id}`);
   assert.equal(response.status, 200);
-  assert.equal(response.json.posterUrl, 'https://film.ru/api/tmdb-image?size=w500&path=%2Fx.jpg');
+  assert.equal(response.json.posterUrl, 'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fx.jpg');
 });
 
 test('прокси постеров смонтирован в Express и валидирует вход', async () => {
@@ -503,7 +504,7 @@ test('легаси-поле poster заполняется готовым URL', a
 
   const response = await call(`/api/films/${film._id}`);
   assert.equal(response.status, 200);
-  assert.equal(response.json.posterUrl, 'https://film.ru/api/tmdb-image?size=w500&path=%2Fy.jpg');
+  assert.equal(response.json.posterUrl, 'https://api.film.ru/api/tmdb-image?size=w500&path=%2Fy.jpg');
   assert.equal(response.json.poster, response.json.posterUrl, 'старый клиент не получит poster');
 });
 

@@ -6,6 +6,7 @@ const cookieParser = require('cookie-parser');
 const {
   helmetMiddleware,
   globalLimiter,
+  imageLimiter,
   bodyLimit,
   noSqlSanitizer
 } = require('./middleware/security');
@@ -41,6 +42,28 @@ app.use(corsMiddleware);
 
 // ===== БЕЗОПАСНОСТЬ (порядок важен!) =====
 app.use(helmetMiddleware);                    // 1. заголовки
+
+// ===== ПРОКСИ ПОСТЕРОВ TMDB =====
+// image.tmdb.org недоступен в РФ, поэтому картинки идут через этот сервер.
+// Монтируем ДО globalLimiter: на одну страницу уходит 20–40 постеров, и общий
+// лимит 200/мин они выжигают за пару экранов — пользователь видит заглушки.
+// Свой лимит (imageLimiter) у прокси есть, он заметно выше.
+const tmdbImageHandler = require('../api/tmdb-image');
+
+app.get('/api/tmdb-image', imageLimiter, tmdbImageHandler);
+
+// Совместимость с фронтендом, который строит ссылки вида /api/poster/w500/<path>.
+app.get('/api/poster/:size/*path', imageLimiter, (req, res) => {
+  const rawPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path;
+  const compatReq = Object.create(req);
+  Object.defineProperty(compatReq, 'query', {
+    value: { size: req.params.size, path: '/' + String(rawPath || '').replace(/^\/+/, '') },
+    enumerable: true,
+    configurable: true
+  });
+  return tmdbImageHandler(compatReq, res);
+});
+
 app.use(globalLimiter);                       // 2. общий лимит запросов
 app.use(express.json({ limit: bodyLimit }));  // 3. парсинг тела с лимитом
 app.use(cookieParser());                       // 4. cookie для refresh-токенов
@@ -62,24 +85,6 @@ app.use('/api/contact',  contactRoutes);
 // ===== HEALTHCHECK =====
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// ===== ПРОКСИ ПОСТЕРОВ TMDB =====
-// Тот же handler, что Vercel подхватывает из api/, но смонтированный в Express:
-// без этого buildPosterUrl() отдаёт ссылки на несуществующий /api/tmdb-image.
-const tmdbImageHandler = require('../api/tmdb-image');
-app.get('/api/tmdb-image', tmdbImageHandler);
-
-// Совместимость с фронтендом, который строит ссылки вида /api/poster/w500/<path>.
-app.get('/api/poster/:size/*path', (req, res) => {
-  const rawPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path;
-  const compatReq = Object.create(req);
-  Object.defineProperty(compatReq, 'query', {
-    value: { size: req.params.size, path: '/' + String(rawPath || '').replace(/^\/+/, '') },
-    enumerable: true,
-    configurable: true
-  });
-  return tmdbImageHandler(compatReq, res);
 });
 
 if (process.env.NODE_ENV === 'test') {

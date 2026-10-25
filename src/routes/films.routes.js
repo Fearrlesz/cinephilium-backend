@@ -74,7 +74,7 @@ router.get('/top', asyncHandler(async (req, res, next) => {
       { $limit: limit }
     ]);
 
-    res.json({ films: films.map(withPosterUrl), sort: sortField, limit });
+    res.json({ films: films.map(film => withPosterUrl(film, req)), sort: sortField, limit });
   } catch (error) {
     throw error;
   }
@@ -91,7 +91,7 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
     if (!film) film = await Film.findOne({ title: { $regex: new RegExp(escapeRegex(title), 'i') } });
     if (!film) throw new NotFoundError('Фильм не найден');
 
-    res.json(withPosterUrl(film));
+    res.json(withPosterUrl(film, req));
   } catch (error) {
     throw error;
   }
@@ -133,7 +133,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     }
 
     res.json({
-      ...withPosterUrl(film),
+      ...withPosterUrl(film, req),
       averageRating:   roundTenth(avgTechnical),
       averageVibe:     roundTenth(avgVibe),
       averageCombined: roundTenth(avgCombined),
@@ -261,7 +261,7 @@ router.get('/', asyncHandler(async (req, res, next) => {
     const total = await Film.countDocuments();
 
     res.json({
-      films: films.map(withPosterUrl),
+      films: films.map(film => withPosterUrl(film, req)),
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       sort: sortField
     });
@@ -328,7 +328,7 @@ router.post('/import', writeLimiter, authenticate, [
       await Film.findOneAndUpdate({ tmdbId: filmData.id }, filmDataForSave);
       const updatedFilm = await Film.findOne({ tmdbId: filmData.id });
       return res.status(200).json({
-        film: withPosterUrl(updatedFilm),
+        film: withPosterUrl(updatedFilm, req),
         alreadyExists: true,
         message: 'Фильм уже есть в каталоге, данные обновлены'
       });
@@ -340,7 +340,7 @@ router.post('/import', writeLimiter, authenticate, [
     await updateAchievements(req.userId);
 
     res.status(201).json({
-      film: withPosterUrl(film),
+      film: withPosterUrl(film, req),
       alreadyExists: false,
       message: 'Фильм успешно добавлен'
     });

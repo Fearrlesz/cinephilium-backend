@@ -1,8 +1,10 @@
 // middleware/security.js
 // Централизованный набор middleware для безопасности Express-приложения.
 
+const net = require('node:net');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { AppError } = require('../utils/errors');
 
@@ -10,6 +12,26 @@ function rateLimitHandler(message) {
   return (_req, _res, next) => {
     next(new AppError('RATE_LIMIT_EXCEEDED', message, 429));
   };
+}
+
+/**
+ * Реальный IP клиента для лимитов.
+ *
+ * На Render приложение стоит за Cloudflare, и `req.ip` при `trust proxy: 1`
+ * оказывается IP edge-ноды Cloudflare, а не посетителя. Один такой IP делят
+ * тысячи людей: лимит 200 запросов/мин выжигается чужими запросами, и 429
+ * получают все — в том числе запросы постеров, которые уходят пачкой на
+ * каждую страницу. Cloudflare отдаёт настоящий адрес в `cf-connecting-ip`,
+ * свой reverse-proxy — в `x-real-ip`. Значения проверяем на валидный IP,
+ * чтобы мусор в заголовке не ломал ключ.
+ */
+function clientIp(req) {
+  for (const header of ['cf-connecting-ip', 'x-real-ip']) {
+    const value = req.headers?.[header];
+    const ip = typeof value === 'string' ? value.trim() : '';
+    if (net.isIP(ip)) return ipKeyGenerator(ip);
+  }
+  return req.ip ? ipKeyGenerator(req.ip) : 'unknown';
 }
 
 /* 1. Helmet */
@@ -25,7 +47,21 @@ const globalLimiter = rateLimit({
   limit: 200,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   handler: rateLimitHandler('Слишком много запросов, попробуйте позже')
+});
+
+/* 2a. Постеры: их на страницу десятки, и каждая картинка — отдельный запрос.
+   В РФ image.tmdb.org недоступен, поэтому постеры идут через этот же сервер.
+   Общий лимит в 200/мин они выжигают за пару экранов, поэтому у прокси свой,
+   заметно более щедрый лимит (и монтируется он до globalLimiter). */
+const imageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 1200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: clientIp,
+  handler: rateLimitHandler('Слишком много запросов картинок, попробуйте позже')
 });
 
 /* 3. Жёсткий лимит для авторизации */
@@ -34,6 +70,7 @@ const authLimiter = rateLimit({
   limit: 10,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   skipSuccessfulRequests: true,
   handler: rateLimitHandler('Слишком много попыток входа. Попробуйте через 15 минут')
 });
@@ -44,6 +81,7 @@ const writeLimiter = rateLimit({
   limit: 30,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   handler: rateLimitHandler('Слишком много действий, замедлитесь')
 });
 
@@ -54,6 +92,7 @@ const registerLimiter = rateLimit({
   limit: 10,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   handler: rateLimitHandler('Слишком много регистраций с этого адреса. Попробуйте позже')
 });
 
@@ -63,6 +102,7 @@ const ratingLimiter = rateLimit({
   limit: 40,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   handler: rateLimitHandler('Слишком много оценок с этого адреса. Попробуйте позже')
 });
 
@@ -72,6 +112,7 @@ const contactLimiter = rateLimit({
   limit: 5,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  keyGenerator: clientIp,
   handler: rateLimitHandler('Слишком много заявок с этого адреса. Напиши админу в Telegram')
 });
 
@@ -135,6 +176,7 @@ function extractBearer(req) {
 module.exports = {
   helmetMiddleware,
   globalLimiter,
+  imageLimiter,
   authLimiter,
   writeLimiter,
   registerLimiter,
@@ -142,6 +184,7 @@ module.exports = {
   contactLimiter,
   bodyLimit,
   noSqlSanitizer,
+  clientIp,
   verifyToken,
   extractBearer
 };

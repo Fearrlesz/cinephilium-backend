@@ -172,7 +172,7 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
 
     res.json(ratings.map(rating => ({
       ...rating.toObject(),
-      filmId: withPosterUrl(rating.filmId)
+      filmId: withPosterUrl(rating.filmId, req)
     })));
   } catch (error) {
     throw error;
@@ -192,7 +192,7 @@ router.get('/:id/details', validateObjectId('id'), asyncHandler(async (req, res,
 
     res.json({
       ...rating.toObject(),
-      filmId: withPosterUrl(rating.filmId)
+      filmId: withPosterUrl(rating.filmId, req)
     });
   } catch (error) {
     throw error;

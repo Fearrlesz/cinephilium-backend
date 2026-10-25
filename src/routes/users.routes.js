@@ -62,7 +62,7 @@ async function sendProfile(req, res, userId) {
     },
     ratings: ratings.map(r => ({
       id: r._id,
-      film: withPosterUrl(r.filmId),
+      film: withPosterUrl(r.filmId, req),
       technicalScore: r.technicalScore,
       combinedScore:  r.combinedScore,
       vibe:           r.vibe,
@@ -75,8 +75,8 @@ async function sendProfile(req, res, userId) {
     reviews: reviews.map(r => ({
       _id: r._id,
       id: r._id,
-      film: withPosterUrl(r.filmId),
-      filmId: withPosterUrl(r.filmId),
+      film: withPosterUrl(r.filmId, req),
+      filmId: withPosterUrl(r.filmId, req),
       ratingId: r.ratingId,
       title: r.title,
       text: r.text,

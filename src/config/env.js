@@ -55,7 +55,45 @@ const ADMIN_TELEGRAMS = String(process.env.ADMIN_TELEGRAMS || '')
   .split(',')
   .map(handle => handle.trim().replace(/^@/, ''))
   .filter(Boolean);
-const IMAGE_PROXY_BASE_URL = process.env.IMAGE_PROXY_BASE_URL || '';
+
+// ===== ПОСТЕРЫ =====
+// База, к которой клеится /api/tmdb-image. Пустое значение — нормальный
+// вариант: тогда origin берётся из самого запроса (то есть всегда наш бэкенд).
+function normalizeImageProxyBase(value) {
+  if (typeof value !== 'string') return '';
+  let base = value.trim();
+  if (!base) return '';
+  base = base.replace(/\/+$/, '').replace(/\/api$/i, '').replace(/\/+$/, '');
+  if (!/^https?:\/\/[^/\s]+$/i.test(base)) {
+    console.warn('⚠️ IMAGE_PROXY_BASE_URL не похож на http(s)-адрес, игнорирую:', value);
+    return '';
+  }
+  return base;
+}
+
+const FRONTEND_ORIGINS = [process.env.CLIENT_URL, ...String(CORS_ORIGIN || '').split(',')]
+  .map(origin => (typeof origin === 'string' ? origin.trim().replace(/\/+$/, '') : ''))
+  .filter(Boolean);
+
+let IMAGE_PROXY_BASE_URL = normalizeImageProxyBase(process.env.IMAGE_PROXY_BASE_URL);
+
+if (IMAGE_PROXY_BASE_URL && FRONTEND_ORIGINS.includes(IMAGE_PROXY_BASE_URL)) {
+  // Классическая ошибка: в переменную кладут домен фронтенда. Если фронт и
+  // бэк — разные домены, /api/tmdb-image там не существует (Vercel отдаёт HTML
+  // SPA), поэтому для таких запросов база берётся из origin запроса.
+  console.warn('⚠️ IMAGE_PROXY_BASE_URL совпадает с доменом фронтенда:', IMAGE_PROXY_BASE_URL);
+  console.warn('   Если фронт и бэк — разные домены, укажите адрес бэкенда или удалите переменную.');
+}
+
+if (IMAGE_PROXY_BASE_URL) {
+  console.log('🖼  IMAGE_PROXY_BASE_URL =', IMAGE_PROXY_BASE_URL);
+} else {
+  console.log('🖼  IMAGE_PROXY_BASE_URL не задан — постеры пойдут через origin запроса');
+}
+
+// utils/poster.js читает process.env в момент запроса (это же используют
+// тесты), поэтому фиксируем там нормализованное/проверенное значение.
+process.env.IMAGE_PROXY_BASE_URL = IMAGE_PROXY_BASE_URL;
 
 module.exports = {
   EXCLUSIVE_NICKNAME,

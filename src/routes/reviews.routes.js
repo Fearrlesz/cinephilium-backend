@@ -54,7 +54,7 @@ router.post('/', writeLimiter, [
 
     res.json({
       ...reviewWithUser.toObject(),
-      filmId: withPosterUrl(reviewWithUser.filmId)
+      filmId: withPosterUrl(reviewWithUser.filmId, req)
     });
   } catch (error) {
     throw error;
@@ -72,7 +72,7 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
 
     res.json(reviews.map(review => ({
       ...review.toObject(),
-      filmId: withPosterUrl(review.filmId)
+      filmId: withPosterUrl(review.filmId, req)
     })));
   } catch (error) {
     throw error;
@@ -110,7 +110,7 @@ router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res,
 
     res.json({
       ...review.toObject(),
-      filmId: withPosterUrl(review.filmId)
+      filmId: withPosterUrl(review.filmId, req)
     });
   } catch (error) {
     throw error;
@@ -145,7 +145,7 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 
     res.json(reviews.map(review => ({
       ...review.toObject(),
-      filmId: withPosterUrl(review.filmId)
+      filmId: withPosterUrl(review.filmId, req)
     })));
   } catch (error) {
     throw error;
