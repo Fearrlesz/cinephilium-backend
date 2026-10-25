@@ -62,6 +62,11 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// ===== ПРОКСИ ПОСТЕРОВ TMDB =====
+// Тот же handler, что Vercel подхватывает из api/, но смонтированный в Express:
+// без этого buildPosterUrl() отдаёт ссылки на несуществующий /api/tmdb-image.
+app.get('/api/tmdb-image', require('../api/tmdb-image'));
+
 if (process.env.NODE_ENV === 'test') {
   app.get('/api/test/internal-error', asyncHandler(async () => {
     throw new Error('boom');

@@ -13,10 +13,16 @@ const { createEvent, updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
-const { NotFoundError, ValidationError } = require('../utils/errors');
+const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
+
+// Экранирование пользовательского ввода перед сборкой RegExp:
+// без этого "[" / "(" / "+" роняют запрос в 500, а "(a+)+$" даёт ReDoS.
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 // ─────────────────────────────────────────────
 // ВАЖНО: /top и /search-by-title ДОЛЖНЫ быть ДО /:id
@@ -78,7 +84,7 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
     if (!title) throw new ValidationError('Название фильма не указано');
 
     let film = await Film.findOne({ title });
-    if (!film) film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
+    if (!film) film = await Film.findOne({ title: { $regex: new RegExp(escapeRegex(title), 'i') } });
     if (!film) throw new NotFoundError('Фильм не найден');
 
     res.json(withPosterUrl(film));
@@ -209,8 +215,8 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
 router.get('/', asyncHandler(async (req, res, next) => {
   try {
     const sort  = req.query.sort || 'technical';
-    const page  = parseInt(req.query.page)  || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     const skip  = (page - 1) * limit;
 
     let sortField;
@@ -266,12 +272,21 @@ router.post('/import', writeLimiter, authenticate, [
     const { tmdbId } = req.body;
     const apiKey = process.env.TMDB_API_KEY;
 
-    const [ruResponse, enResponse] = await Promise.all([
-      fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`),
-      fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=en-US`)
-    ]);
+    const [ruResponse, enResponse] = await (async () => {
+      try {
+        return await Promise.all([
+          fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=ru-RU&append_to_response=credits,videos`),
+          fetch(`https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${apiKey}&language=en-US`)
+        ]);
+      } catch {
+        throw new AppError('TMDB_UNAVAILABLE', 'Сервис TMDB временно недоступен', 502);
+      }
+    })();
 
-    if (!ruResponse.ok) throw new Error(`TMDB API error (ru): ${ruResponse.status}`);
+    if (ruResponse.status === 404) throw new NotFoundError('Фильм не найден в TMDB');
+    if (!ruResponse.ok) {
+      throw new AppError('TMDB_UNAVAILABLE', 'Сервис TMDB временно недоступен', 502);
+    }
 
     const filmData = await ruResponse.json();
     const enData   = enResponse.ok ? await enResponse.json() : {};

@@ -57,6 +57,15 @@ router.post('/', writeLimiter, authenticate, requireVerified, asyncHandler(async
       throw new ValidationError('vibe должен быть от 1 до 10');
     }
 
+    if (textReview !== undefined && textReview !== null) {
+      if (typeof textReview !== 'string') {
+        throw new ValidationError('textReview должен быть строкой');
+      }
+      if (textReview.length > 2000) {
+        throw new ValidationError('textReview не длиннее 2000 символов');
+      }
+    }
+
     let weightsArray;
 
     if (genrePreset && GENRE_PRESETS[genrePreset] && genrePreset !== 'hybrid') {

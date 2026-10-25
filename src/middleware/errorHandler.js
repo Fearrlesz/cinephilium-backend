@@ -42,6 +42,20 @@ function errorHandler(err, req, res, next) {
     statusCode = 401;
     code = 'UNAUTHORIZED';
     message = 'Невалидный токен';
+  } else if (err.type === 'entity.parse.failed') {
+    // Битый JSON от body-parser: без этой ветки уходил как 500.
+    statusCode = 400;
+    code = 'INVALID_JSON';
+    message = 'Некорректный JSON в теле запроса';
+  } else if (err.type === 'entity.too.large') {
+    statusCode = 413;
+    code = 'PAYLOAD_TOO_LARGE';
+    message = 'Тело запроса слишком велико';
+  } else if (err.expose && Number.isInteger(err.status) && err.status >= 400 && err.status < 500) {
+    // Прочие «операционные» 4xx от middleware (например, ограничения body-parser).
+    statusCode = err.status;
+    code = 'BAD_REQUEST';
+    message = err.message;
   }
 
   console.error('[ERROR]', {

@@ -9,7 +9,7 @@ const { verifyAccessToken } = require('../utils/jwt');
 const User = require('../models/User');
 const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
-const { existsById, updateAchievements } = require('../utils/helpers');
+const { updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -32,8 +32,11 @@ router.post('/', writeLimiter, [
     if (!film) throw new NotFoundError('Фильм не найден');
 
     if (parentId) {
-      const parentExists = await existsById(Comment, parentId);
-      if (!parentExists) throw new NotFoundError('Родительский комментарий не найден');
+      const parent = await Comment.findById(parentId).select('filmId');
+      if (!parent) throw new NotFoundError('Родительский комментарий не найден');
+      if (String(parent.filmId) !== String(film._id)) {
+        throw new ValidationError('Родительский комментарий относится к другому фильму');
+      }
     }
 
     const comment = new Comment({ userId: req.userId, filmId, text, parentId, status: 'pending' });

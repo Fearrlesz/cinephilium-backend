@@ -137,7 +137,7 @@ test('POST /api/films/import persists posterPath and leaves poster empty', async
   });
 
   try {
-    const token = jwt.sign({ userId }, process.env.JWT_SECRET);
+    const token = require('../src/utils/jwt').signAccessToken(userId);
     const response = await requestFetch(`${baseUrl}/api/films/import`, {
       method: 'POST',
       headers: {

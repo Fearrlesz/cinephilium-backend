@@ -231,7 +231,7 @@ test('unverified users cannot create reviews and verified users can', async () =
     [Review, 'findOne', async () => null],
     [User, 'updateOne', async () => ({ modifiedCount: 1 })],
     [Review.prototype, 'save', async function save() {}],
-    [Review, 'findById', () => ({ populate() { return this; } })]
+    [Review, 'findById', () => ({ populate() { return this; }, toObject() { return {}; } })]
   ], async () => {
     const response = await post('reviews', {
       filmId: '507f1f77bcf86cd799439011',

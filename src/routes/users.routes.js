@@ -26,21 +26,30 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     const user = await User.findById(userId).select('-password');
     if (!user) throw new NotFoundError('Пользователь не найден');
 
-    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster posterPath year');
-    const reviews  = await Review.find({ userId })
-      .populate('filmId', 'title poster posterPath year')
-      .populate('ratingId');
-    const comments = await Comment.find({ userId }).populate('filmId', 'title');
-
     let isOwnProfile = false;
+    let isAdmin = false;
     const token = extractBearer(req);
     if (token) {
       try {
         const decoded = verifyAccessToken(token);
         // 🐛 ФИКС: приведение к строке для надёжного сравнения
         isOwnProfile = String(decoded.userId) === String(userId);
+        if (!isOwnProfile) {
+          const viewer = await User.findById(decoded.userId).select('isAdmin');
+          isAdmin = viewer?.isAdmin || false;
+        }
       } catch { /* игнор */ }
     }
+
+    // Чужие черновики и отклонённые материалы не показываем: полный список
+    // доступен только владельцу профиля и администратору.
+    const statusFilter = isOwnProfile || isAdmin ? {} : { status: 'approved' };
+
+    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster posterPath year');
+    const reviews  = await Review.find({ userId, ...statusFilter })
+      .populate('filmId', 'title poster posterPath year')
+      .populate('ratingId');
+    const comments = await Comment.find({ userId, ...statusFilter }).populate('filmId', 'title');
 
     res.json({
       user: {

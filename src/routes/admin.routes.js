@@ -93,12 +93,16 @@ router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (r
       .populate('filmId', 'title');
     if (before.status !== 'approved') await incCounter(before.userId, 'commentsApproved', 1);
 
-    const authorIsAdmin = comment.userId?.isAdmin || false;
-    const authorPoints = authorIsAdmin ? 10 : 2;
+    // Награда начисляется только при переходе в approved, иначе повторное
+    // нажатие «одобрить» бесконечно фармит баллы и события.
+    if (before.status !== 'approved') {
+      const authorIsAdmin = comment.userId?.isAdmin || false;
+      const authorPoints = authorIsAdmin ? 10 : 2;
 
-    await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
-    await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
-    await updateAchievements(comment.userId._id);
+      await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
+      await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
+      await updateAchievements(comment.userId._id);
+    }
 
     res.json(comment);
   } catch (error) {
@@ -132,12 +136,14 @@ router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (re
       .populate('filmId', 'title');
     if (before.status !== 'approved') await incCounter(before.userId, 'reviewsApproved', 1);
 
-    const authorIsAdmin = review.userId?.isAdmin || false;
-    const authorPoints = authorIsAdmin ? 50 : 30;
+    if (before.status !== 'approved') {
+      const authorIsAdmin = review.userId?.isAdmin || false;
+      const authorPoints = authorIsAdmin ? 50 : 30;
 
-    await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
-    await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
-    await updateAchievements(review.userId._id);
+      await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
+      await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
+      await updateAchievements(review.userId._id);
+    }
 
     res.json(review);
   } catch (error) {

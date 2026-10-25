@@ -38,16 +38,16 @@ after(async () => {
 });
 
 function query(value) {
-  return {
+  return Object.assign(value, {
     select() { return this; },
     lean() { return this; },
+    toObject() { return value; },
     populate(path) {
       if (path === 'userId' && value.userId && !value.userId.nickname) value.userId = author;
       if (path === 'filmId' && value.filmId && !value.filmId.title) value.filmId = film;
       return this;
-    },
-    then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); }
-  };
+    }
+  });
 }
 
 async function request(path, { method = 'POST', body, token = signAccessToken(userId), headers = {} } = {}) {

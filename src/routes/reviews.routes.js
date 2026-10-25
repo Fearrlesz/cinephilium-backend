@@ -91,6 +91,23 @@ router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res,
 
     if (!review) throw new NotFoundError('Рецензия не найдена');
 
+    // Черновик и отклонённая рецензия не должны утекать по прямому id.
+    let isAdmin = false;
+    let viewerId = null;
+    const token = extractBearer(req);
+    if (token) {
+      try {
+        const decoded = verifyAccessToken(token);
+        viewerId = decoded.userId;
+        const viewer = await User.findById(decoded.userId);
+        isAdmin = viewer?.isAdmin || false;
+      } catch { /* игнор */ }
+    }
+    const isAuthor = Boolean(viewerId) && String(review.userId?._id) === String(viewerId);
+    if (review.status !== 'approved' && !isAdmin && !isAuthor) {
+      throw new NotFoundError('Рецензия не найдена');
+    }
+
     res.json({
       ...review.toObject(),
       filmId: withPosterUrl(review.filmId)
