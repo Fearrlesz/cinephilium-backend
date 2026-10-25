@@ -399,6 +399,7 @@ node scripts/backfill-anti-farm.js        # поля анти-накрутки +
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
 node scripts/flag-sybil-accounts.js --unflag    # снять пометки
+node scripts/send-test-email.js you@example.com # проверить SMTP из .env
 ```
 
 ---
