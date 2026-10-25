@@ -1,4 +1,4 @@
-# Changelog — Cinephilium 4.0
+# Changelog — Cinephilium 3.5
 
 **Дата и время среза: 25.10.2026, 21:30 (Europe/Moscow, UTC+03:00)**
 
