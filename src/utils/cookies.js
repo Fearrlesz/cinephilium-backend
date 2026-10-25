@@ -3,8 +3,10 @@ const { COOKIE_DOMAIN, COOKIE_SECURE, JWT_REFRESH_TTL_DAYS } = require('../confi
 const refreshCookieOptions = {
   httpOnly: true,
   secure: COOKIE_SECURE,
-  sameSite: 'lax',
-  domain: COOKIE_DOMAIN,
+  // Для cross-site запросов (frontend на vercel.app, API на onrender.com)
+  // SameSite=Lax не отправит cookie, поэтому в проде нужен None + Secure.
+  sameSite: COOKIE_SECURE ? 'none' : 'lax',
+  ...(COOKIE_DOMAIN ? { domain: COOKIE_DOMAIN } : {}),
   path: '/api/auth'
 };
 

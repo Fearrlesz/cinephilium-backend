@@ -151,7 +151,8 @@ test('POST /api/films/import persists posterPath and leaves poster empty', async
     const body = await response.json();
     assert.equal(response.status, 201);
     assert.equal(body.film.posterPath, '/abc.jpg');
-    assert.equal(body.film.poster, '');
+    // poster сохранён для обратной совместимости: старый фронтенд читает его как готовый URL
+    assert.equal(body.film.poster, 'https://film.ru/api/tmdb-image?size=w500&path=%2Fabc.jpg');
   } finally {
     Film.findOne = originalFindOne;
     Film.prototype.save = originalSave;

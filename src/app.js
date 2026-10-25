@@ -65,7 +65,20 @@ app.get('/api/health', (req, res) => {
 // ===== ПРОКСИ ПОСТЕРОВ TMDB =====
 // Тот же handler, что Vercel подхватывает из api/, но смонтированный в Express:
 // без этого buildPosterUrl() отдаёт ссылки на несуществующий /api/tmdb-image.
-app.get('/api/tmdb-image', require('../api/tmdb-image'));
+const tmdbImageHandler = require('../api/tmdb-image');
+app.get('/api/tmdb-image', tmdbImageHandler);
+
+// Совместимость с фронтендом, который строит ссылки вида /api/poster/w500/<path>.
+app.get('/api/poster/:size/*path', (req, res) => {
+  const rawPath = Array.isArray(req.params.path) ? req.params.path.join('/') : req.params.path;
+  const compatReq = Object.create(req);
+  Object.defineProperty(compatReq, 'query', {
+    value: { size: req.params.size, path: '/' + String(rawPath || '').replace(/^\/+/, '') },
+    enumerable: true,
+    configurable: true
+  });
+  return tmdbImageHandler(compatReq, res);
+});
 
 if (process.env.NODE_ENV === 'test') {
   app.get('/api/test/internal-error', asyncHandler(async () => {

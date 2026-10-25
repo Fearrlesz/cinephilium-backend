@@ -32,7 +32,10 @@ const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
 const JWT_ACCESS_TTL = process.env.JWT_ACCESS_TTL || '15m';
 const JWT_REFRESH_TTL_DAYS = Number(process.env.JWT_REFRESH_TTL_DAYS || 30);
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || 'localhost';
+// По умолчанию домен НЕ задаём: host-only cookie корректно работает и на
+// localhost, и на onrender.com. Захардкоженный 'localhost' в проде ломает
+// refresh-cookie на реальном домене.
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined
   ? process.env.NODE_ENV === 'production'
   : process.env.COOKIE_SECURE === 'true';

@@ -443,3 +443,43 @@ test('404 и битый JSON — это JSON, чужой origin не получ�
   const allowed = await call('/api/health', { headers: { origin: 'https://film.ru' } });
   assert.equal(allowed.headers.get('access-control-allow-origin'), 'https://film.ru');
 });
+
+// ─────────────── СОВМЕСТИМОСТЬ С ФРОНТЕНДОМ ───────────────
+
+test('легаси-поле poster заполняется готовым URL', async () => {
+  const film = await Film.create({ tmdbId: 11, title: 'Легаси', posterPath: '/y.jpg' });
+
+  const response = await call(`/api/films/${film._id}`);
+  assert.equal(response.status, 200);
+  assert.equal(response.json.posterUrl, 'https://film.ru/api/tmdb-image?size=w500&path=%2Fy.jpg');
+  assert.equal(response.json.poster, response.json.posterUrl, 'старый клиент не получит poster');
+});
+
+test('профиль доступен по никнейму', async () => {
+  const user = await createUser({ nickname: 'Критик' });
+
+  const byNickname = await call('/api/users/nickname/' + encodeURIComponent('Критик'));
+  assert.equal(byNickname.status, 200);
+  assert.equal(byNickname.json.nickname, 'Критик');
+  assert.equal(String(byNickname.json._id), String(user._id));
+
+  assert.equal((await call('/api/users/nickname/nobody-here')).status, 404);
+});
+
+test('/users/me/achievements отдаёт earned и totalPoints', async () => {
+  const user = await createUser();
+
+  assert.equal((await call('/api/users/me/achievements')).status, 401);
+
+  const response = await call('/api/users/me/achievements', { token: signAccessToken(user._id) });
+  assert.equal(response.status, 200);
+  assert.ok(Array.isArray(response.json.earned));
+  assert.ok(Array.isArray(response.json.possible));
+  assert.equal(response.json.totalPoints, 0);
+  assert.equal(response.json.progress.ratings, 0);
+});
+
+test('алиас /api/poster/:size/* валидирует размер', async () => {
+  const badSize = await call('/api/poster/huge/x.jpg');
+  assert.equal(badSize.status, 400);
+});

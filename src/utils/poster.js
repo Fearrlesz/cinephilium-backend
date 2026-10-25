@@ -11,9 +11,12 @@ function withPosterUrl(film) {
   if (!film) return film;
 
   const filmObject = typeof film.toObject === 'function' ? film.toObject() : film;
+  const posterUrl = buildPosterUrl(filmObject.posterPath);
   return {
     ...filmObject,
-    posterUrl: buildPosterUrl(filmObject.posterPath)
+    posterUrl,
+    // Обратная совместимость: старый фронтенд читает film.poster как готовый URL.
+    poster: filmObject.poster || posterUrl
   };
 }
 
