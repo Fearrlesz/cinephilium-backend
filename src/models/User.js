@@ -47,6 +47,8 @@ const userSchema = new mongoose.Schema({
   password:       { type: String, required: true },
   nickname:       { type: String, unique: true, required: true, maxlength: 50 },
   avatar:         { type: String, default: '' },
+  // Telegram без @ — показывается на странице «Связь с админами».
+  telegram:       { type: String, default: '', trim: true, maxlength: 32 },
   isAdmin:        { type: Boolean, default: false },
   // Какой инвайт открыл аккаунт — нужно, чтобы отслеживать фермы и отзывать доступ.
   invitedBy:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

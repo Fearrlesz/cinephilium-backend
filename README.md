@@ -69,6 +69,7 @@ npm start                 # http://localhost:3000/api/health
 | `REGISTRATION_MODE` | `invite` | `invite` — только по коду от админа, `open` — свободная регистрация |
 | `INVITE_TTL_DAYS` | `0` | срок жизни выданного инвайта в днях; 0 — бессрочно |
 | `PASSWORD_RESET_TTL_MIN` | `30` | сколько живёт ссылка сброса пароля от админа |
+| `ADMIN_TELEGRAMS` | — | телеграмы для страницы связи, через запятую (`fearrlez,asduna_piu`) |
 
 ---
 
@@ -190,8 +191,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique |
+| `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
 | `reviews` | userId, filmId, ratingId, title, text (450..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
@@ -242,6 +244,16 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | POST | `/api/auth/reset-password` | — | сменить пароль по ссылке от админа |
 | GET | `/api/auth/me` | access | текущий пользователь |
 
+### Связь с админами
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/contact/admins` | — | телеграмы админов (из базы + `ADMIN_TELEGRAMS`) |
+| POST | `/api/contact/request` | — (5/час с IP) | заявка «хочу доступ»: ник, контакт, сообщение |
+
+Заявка не отправляет писем: она попадает в очередь админки. Скрытое поле `website` —
+ловушка для ботов: если заполнено, сервер отвечает «успехом», но ничего не сохраняет.
+
 ### Фильмы
 
 | Метод | Путь | Доступ | Описание |
@@ -284,6 +296,11 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | GET/POST | `/api/admin/invites` | admin — список (без кодов) и выдача новых |
 | DELETE | `/api/admin/invites/:id` | admin — отозвать неиспользованный код |
 | GET | `/api/admin/users?query=` | admin — поиск по никнейму |
+| POST | `/api/admin/users/:id/admin` | admin — выдать/снять права (`{ "isAdmin": true|false }`) |
+| POST | `/api/admin/users/:id/telegram` | admin — телеграм пользователя (виден на странице связи) |
+| GET | `/api/admin/contact-requests?status=new` | admin — очередь заявок |
+| POST | `/api/admin/contact-requests/:id/approve` | admin — выдать инвайт по заявке (код в ответе) |
+| POST | `/api/admin/contact-requests/:id/reject` | admin — отклонить заявку |
 | POST | `/api/admin/users/:id/reset-link` | admin — одноразовая ссылка сброса |
 | GET | `/api/admin/pending/comments` / `reviews` | admin |
 | PUT | `/api/admin/comments/:id/approve` / `reject` | admin |
@@ -299,13 +316,14 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test
 ```
 
-84 теста на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
+97 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
 поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
 
 | Файл | Тестов |
 |---|---|
-| `tests/auth-invite.test.js` | 12 |
+| `tests/auth-invite.test.js` | 14 |
 | `tests/auth-refresh.test.js` | 13 |
+| `tests/contact.test.js` | 11 |
 | `tests/counters.test.js` | 15 |
 | `tests/errorHandler.test.js` | 7 |
 | `tests/poster.test.js` | 9 |
@@ -399,6 +417,8 @@ node scripts/reconcile-counters.js
 
 ```bash
 node scripts/new-invite.js 5                # выдать 5 инвайт-кодов
+node scripts/make-admin.js <никнейм>        # выдать права админа (--revoke снять)
+node scripts/set-telegram.js <никнейм> @tg  # телеграм для страницы связи
 node scripts/migrate-counters.js          # первичный расчёт counters
 node scripts/reconcile-counters.js        # сверка counters с документами
 node scripts/migrate-posters.js           # poster -> posterPath

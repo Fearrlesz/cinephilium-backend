@@ -49,6 +49,12 @@ const REGISTRATION_MODE = process.env.REGISTRATION_MODE === 'open' ? 'open' : 'i
 const INVITE_TTL_DAYS = Number(process.env.INVITE_TTL_DAYS || 0);
 // Срок жизни одноразовой ссылки сброса пароля, которую выдаёт админ.
 const PASSWORD_RESET_TTL_MIN = Number(process.env.PASSWORD_RESET_TTL_MIN || 30);
+// Телеграмы админов для страницы «Связь с админами»: список через запятую.
+// Нужны, чтобы контакты были видны ещё до того, как админ заполнит профиль.
+const ADMIN_TELEGRAMS = String(process.env.ADMIN_TELEGRAMS || '')
+  .split(',')
+  .map(handle => handle.trim().replace(/^@/, ''))
+  .filter(Boolean);
 const IMAGE_PROXY_BASE_URL = process.env.IMAGE_PROXY_BASE_URL || '';
 
 module.exports = {
@@ -65,5 +71,6 @@ module.exports = {
   REGISTRATION_MODE,
   INVITE_TTL_DAYS,
   PASSWORD_RESET_TTL_MIN,
+  ADMIN_TELEGRAMS,
   IMAGE_PROXY_BASE_URL
 };

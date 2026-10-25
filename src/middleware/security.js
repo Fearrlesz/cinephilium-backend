@@ -66,6 +66,15 @@ const ratingLimiter = rateLimit({
   handler: rateLimitHandler('Слишком много оценок с этого адреса. Попробуйте позже')
 });
 
+/* 4c. Лимит на заявки «хочу доступ»: 5 в час с одного IP. */
+const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: rateLimitHandler('Слишком много заявок с этого адреса. Напиши админу в Telegram')
+});
+
 /* 5. Ограничение размера JSON-тела */
 const bodyLimit = '100kb';
 
@@ -130,6 +139,7 @@ module.exports = {
   writeLimiter,
   registerLimiter,
   ratingLimiter,
+  contactLimiter,
   bodyLimit,
   noSqlSanitizer,
   verifyToken,

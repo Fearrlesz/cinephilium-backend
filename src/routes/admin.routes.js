@@ -10,6 +10,8 @@ const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 const { generateInviteCode, hashToken, generateResetToken } = require('../utils/tokens');
+const { normalizeTelegram, isValidTelegram } = require('../utils/telegram');
+const ContactRequest = require('../models/ContactRequest');
 const { PASSWORD_RESET_TTL_MIN, INVITE_TTL_DAYS } = require('../config/env');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -252,6 +254,80 @@ router.delete('/invites/:id', authenticate, isAdmin, asyncHandler(async (req, re
   res.json({ message: 'Код отозван' });
 }));
 
+// ─── ЗАЯВКИ С САЙТА ─────────────────────────────────────
+// Человек оставляет заявку на странице «Связь с админами», админ выдаёт код вручную.
+
+// GET /api/admin/contact-requests?status=new — очередь заявок.
+router.get('/contact-requests', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  const allowed = ['new', 'approved', 'rejected'];
+  const status = allowed.includes(req.query.status) ? req.query.status : 'new';
+
+  const requests = await ContactRequest.find({ status })
+    .sort({ createdAt: -1 })
+    .limit(100)
+    .lean();
+
+  res.json(requests.map(request => ({
+    id: request._id,
+    nickname: request.nickname,
+    contact: request.contact,
+    message: request.message,
+    status: request.status,
+    createdAt: request.createdAt,
+    reviewedAt: request.reviewedAt
+  })));
+}));
+
+// POST /api/admin/contact-requests/:id/approve — выдать инвайт по заявке.
+// Код возвращается один раз: админ копирует его и отправляет по контакту из заявки.
+router.post('/contact-requests/:id/approve', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Заявка не найдена');
+
+  const request = await ContactRequest.findById(req.params.id);
+  if (!request) throw new NotFoundError('Заявка не найдена');
+  if (request.status !== 'new') throw new AppError('REQUEST_ALREADY_REVIEWED', 'Заявка уже обработана', 409);
+
+  const code = generateInviteCode();
+  const expiresAt = INVITE_TTL_DAYS > 0 ? new Date(Date.now() + INVITE_TTL_DAYS * 24 * 60 * 60 * 1000) : null;
+  const invite = await Invite.create({
+    codeHash: hashToken(code.replace('-', '')),
+    codePrefix: code.slice(0, 4),
+    note: `заявка: ${request.nickname}`,
+    createdBy: req.userId,
+    expiresAt
+  });
+
+  request.status = 'approved';
+  request.inviteId = invite._id;
+  request.reviewedBy = req.userId;
+  request.reviewedAt = new Date();
+  await request.save();
+
+  res.json({
+    code,
+    nickname: request.nickname,
+    contact: request.contact,
+    expiresAt,
+    message: 'Код показывается один раз — отправь его по контакту из заявки'
+  });
+}));
+
+// POST /api/admin/contact-requests/:id/reject — отклонить заявку.
+router.post('/contact-requests/:id/reject', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Заявка не найдена');
+
+  const request = await ContactRequest.findById(req.params.id);
+  if (!request) throw new NotFoundError('Заявка не найдена');
+  if (request.status !== 'new') throw new AppError('REQUEST_ALREADY_REVIEWED', 'Заявка уже обработана', 409);
+
+  request.status = 'rejected';
+  request.reviewedBy = req.userId;
+  request.reviewedAt = new Date();
+  await request.save();
+
+  res.json({ id: request._id, status: request.status });
+}));
+
 // ─── ПОЛЬЗОВАТЕЛИ И СБРОС ПАРОЛЯ ─────────────────────────
 
 // GET /api/admin/users?query= — поиск по никнейму, чтобы найти кому выдать ссылку.
@@ -264,17 +340,71 @@ router.get('/users', authenticate, isAdmin, asyncHandler(async (req, res) => {
   const users = await User.find(filter)
     .sort({ registeredAt: -1 })
     .limit(20)
-    .select('nickname isAdmin email registeredAt flagged')
+    .select('nickname isAdmin email telegram registeredAt flagged')
     .lean();
 
   res.json(users.map(user => ({
     id: user._id,
     nickname: user.nickname,
     isAdmin: user.isAdmin,
+    telegram: user.telegram || '',
     hasEmail: Boolean(user.email),
     flagged: Boolean(user.flagged),
     registeredAt: user.registeredAt
   })));
+}));
+
+// POST /api/admin/users/:id/telegram — задать телеграм пользователя.
+// Именно он показывается на странице «Связь с админами».
+router.post('/users/:id/telegram', authenticate, isAdmin, [
+  body('telegram').optional({ nullable: true }).isString()
+], asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Пользователь не найден');
+
+  const handle = normalizeTelegram(req.body.telegram);
+  if (handle && !isValidTelegram(handle)) {
+    throw new AppError('INVALID_TELEGRAM', 'Телеграм должен быть вида @nickname (3–32 символа)', 400);
+  }
+
+  const user = await User.findById(req.params.id);
+  if (!user) throw new NotFoundError('Пользователь не найден');
+
+  user.telegram = handle;
+  await user.save();
+
+  res.json({ id: user._id, nickname: user.nickname, telegram: user.telegram });
+}));
+
+// POST /api/admin/users/:id/admin — выдать или снять права администратора.
+// Действует только админ; снять права с самого себя нельзя, как и оставить сайт без админов.
+router.post('/users/:id/admin', authenticate, isAdmin, [
+  body('isAdmin').optional().isBoolean().withMessage('isAdmin должен быть true или false')
+], asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Пользователь не найден');
+
+  const target = await User.findById(req.params.id);
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  const makeAdmin = req.body.isAdmin !== false;
+
+  if (!makeAdmin) {
+    if (String(target._id) === String(req.userId)) {
+      throw new AppError('CANNOT_DEMOTE_SELF', 'Нельзя снять права с самого себя', 400);
+    }
+    const admins = await User.countDocuments({ isAdmin: true });
+    if (admins <= 1) {
+      throw new AppError('LAST_ADMIN', 'Это последний администратор — снять права нельзя', 400);
+    }
+  }
+
+  if (target.isAdmin !== makeAdmin) {
+    target.isAdmin = makeAdmin;
+    await target.save();
+  }
+
+  res.json({ id: target._id, nickname: target.nickname, isAdmin: target.isAdmin });
 }));
 
 // POST /api/admin/users/:id/reset-link — одноразовая ссылка сброса пароля.

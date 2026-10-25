@@ -333,3 +333,50 @@ test('ссылка для несуществующего пользовател�
   });
   assert.equal(response.status, 404);
 });
+
+// ─────────────── АДМИН: ВЫДАЧА ПРАВ ───────────────
+
+test('админ назначает второго админа и снимает права, но не с себя', async () => {
+  const admin = await seedUser({ nickname: 'Главный', isAdmin: true });
+  const token = signAccessToken(admin._id);
+  const user = await seedUser({ nickname: 'Будущий админ' });
+
+  const promoted = await call(`/api/admin/users/${user._id}/admin`, {
+    method: 'POST',
+    token,
+    body: { isAdmin: true }
+  });
+  assert.equal(promoted.status, 200);
+  assert.equal(promoted.json.isAdmin, true);
+  assert.equal((await User.findById(user._id)).isAdmin, true, 'права не сохранились в базе');
+
+  const selfDemote = await call(`/api/admin/users/${admin._id}/admin`, {
+    method: 'POST',
+    token,
+    body: { isAdmin: false }
+  });
+  assert.equal(selfDemote.status, 400);
+  assert.equal(selfDemote.json.error.code, 'CANNOT_DEMOTE_SELF');
+
+  const demoted = await call(`/api/admin/users/${user._id}/admin`, {
+    method: 'POST',
+    token,
+    body: { isAdmin: false }
+  });
+  assert.equal(demoted.status, 200);
+  assert.equal(demoted.json.isAdmin, false);
+  assert.equal((await User.findById(user._id)).isAdmin, false);
+});
+
+test('обычный пользователь не может раздавать права администратора', async () => {
+  const user = await seedUser({ nickname: 'Обычный' });
+  const victim = await seedUser({ nickname: 'Цель' });
+
+  const response = await call(`/api/admin/users/${victim._id}/admin`, {
+    method: 'POST',
+    token: signAccessToken(user._id),
+    body: { isAdmin: true }
+  });
+  assert.equal(response.status, 403);
+  assert.equal((await User.findById(victim._id)).isAdmin, false);
+});

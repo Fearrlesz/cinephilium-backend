@@ -24,6 +24,7 @@ const adminRoutes    = require('./routes/admin.routes');
 const tmdbRoutes     = require('./routes/tmdb.routes');
 const eventsRoutes   = require('./routes/events.routes');
 const topRoutes      = require('./routes/top.routes');
+const contactRoutes  = require('./routes/contact.routes');
 const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
 const asyncHandler = require('./utils/asyncHandler');
 
@@ -56,6 +57,7 @@ app.use('/api/admin',    adminRoutes);
 app.use('/api/tmdb',     tmdbRoutes);
 app.use('/api/events',   eventsRoutes);
 app.use('/api/top',      topRoutes);
+app.use('/api/contact',  contactRoutes);
 
 // ===== HEALTHCHECK =====
 app.get('/api/health', (req, res) => {
