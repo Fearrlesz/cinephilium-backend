@@ -42,8 +42,12 @@ router.get('/top', asyncHandler(async (req, res, next) => {
       {
         $lookup: {
           from: 'ratings',
-          localField: '_id',
-          foreignField: 'filmId',
+          let: { filmId: '$_id' },
+          pipeline: [
+            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
+            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
+            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
+          ],
           as: 'ratings'
         }
       },
@@ -102,7 +106,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     if (!film) throw new NotFoundError('Фильм не найден');
 
     const ratingData = await Rating.aggregate([
-      { $match: { filmId: film._id } },
+      { $match: { filmId: film._id, weight: { $ne: 0 } } },
       {
         $group: {
           _id: null,
@@ -231,8 +235,12 @@ router.get('/', asyncHandler(async (req, res, next) => {
       {
         $lookup: {
           from: 'ratings',
-          localField: '_id',
-          foreignField: 'filmId',
+          let: { filmId: '$_id' },
+          pipeline: [
+            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
+            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
+            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
+          ],
           as: 'ratings'
         }
       },

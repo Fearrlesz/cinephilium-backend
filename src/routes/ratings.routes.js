@@ -5,7 +5,7 @@ const Film    = require('../models/Film');
 const User    = require('../models/User');
 const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter } = require('../middleware/security');
+const { writeLimiter, ratingLimiter } = require('../middleware/security');
 const {
   BLOCK_CRITERIA,
   GENRE_PRESETS,
@@ -29,7 +29,7 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/ratings
-router.post('/', writeLimiter, authenticate, requireVerified, asyncHandler(async (req, res, next) => {
+router.post('/', writeLimiter, ratingLimiter, authenticate, requireVerified, asyncHandler(async (req, res, next) => {
   try {
     const { filmId, scores, vibe, genrePreset, blockWeights, textReview } = req.body;
 
@@ -116,7 +116,11 @@ router.post('/', writeLimiter, authenticate, requireVerified, asyncHandler(async
           vibe,
           technicalScore,
           combinedScore,
-          textReview: textReview || ''
+          textReview: textReview || '',
+          // Вес голоса берём из аккаунта: у помеченных ферм он 0, такие
+          // оценки потом не попадают в средние по фильму.
+          weight: typeof req.user?.trustWeight === 'number' ? req.user.trustWeight : 1,
+          ip: req.ip || ''
         }
       },
       { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }

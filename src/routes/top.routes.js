@@ -10,9 +10,12 @@ router.get('/users', asyncHandler(async (req, res, next) => {
   try {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-    const total = await User.countDocuments();
+    // Помеченные фермы не должны светиться и в рейтинге пользователей.
+    const visibleFilter = { flagged: { $ne: true } };
+    const total = await User.countDocuments(visibleFilter);
 
     const users = await User.aggregate([
+      { $match: visibleFilter },
       { $project: { password: 0 } },
       { $sort: { totalPoints: -1 } },
       { $skip: (page - 1) * limit },

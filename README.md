@@ -49,6 +49,9 @@ node scripts/migrate-posters.js      # перенос poster -> posterPath
 node scripts/migrate-counters.js     # первичный расчёт counters
 node scripts/reconcile-counters.js   # сверка counters с реальными документами
 node scripts/backfill-email-verified.js
+node scripts/flag-sybil-accounts.js --dry-run   # поиск аккаунтов-ферм
+node scripts/flag-sybil-accounts.js             # пометить (вес оценок = 0)
+node scripts/flag-sybil-accounts.js --unflag    # снять пометки
 ```
 
 ## Структура
@@ -82,6 +85,25 @@ tests/                node:test
 Авторизация: `Authorization: Bearer <accessToken>`; refresh-токен приходит в HttpOnly cookie
 `refresh_token` (path `/api/auth`) и обновляется через `POST /api/auth/refresh`.
 
+Регистрация требует явных согласий: без `consent: { personalData: true, cookies: true }`
+`POST /api/auth/register` возвращает 400 и не создаёт пользователя. Согласия и IP
+сохраняются в `User.consent` / `User.registeredIp`.
+
+Сброс пароля: `POST /api/auth/forgot-password` присылает ссылку
+`<CLIENT_URL>/reset-password?token=...`, поэтому `CLIENT_URL` должен указывать на фронтенд.
+
 Ошибки отдаются единообразно: `{ "error": { "code": "...", "message": "...", "details": [...] } }`.
 
 Постеры: в ответах есть `posterPath` и готовый `posterUrl`; поле `poster` устарело.
+
+## Защита от накрутки оценок
+
+- лимит регистраций — 10 в час с одного IP (успешные тоже считаются);
+- лимит оценок — 40 в час с одного IP;
+- у пользователя хранится `registeredIp`, у оценки — `ip` и `weight`;
+- скрипт `flag-sybil-accounts.js` находит кластеры (по умолчанию ≥5 аккаунтов за час
+  с одного IP) и ставит им `trustWeight = 0`, а их оценкам `weight = 0`;
+- средние по фильмам, топ фильмов и топ пользователей игнорируют `weight = 0`.
+
+Ограничение: распределённая ферма (много IP, одноразовые почты) так не ловится —
+для неё нужны CAPTCHA и репутация email-домена.

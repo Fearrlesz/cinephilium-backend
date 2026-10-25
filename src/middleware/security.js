@@ -47,6 +47,25 @@ const writeLimiter = rateLimit({
   handler: rateLimitHandler('Слишком много действий, замедлитесь')
 });
 
+/* 4a. Лимит на регистрации: считает и успешные запросы,
+   иначе с одного IP можно наделать сколько угодно аккаунтов. */
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: rateLimitHandler('Слишком много регистраций с этого адреса. Попробуйте позже')
+});
+
+/* 4b. Лимит на оценки с одного IP — тормозит накрутку с одной точки. */
+const ratingLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 40,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: rateLimitHandler('Слишком много оценок с этого адреса. Попробуйте позже')
+});
+
 /* 5. Ограничение размера JSON-тела */
 const bodyLimit = '100kb';
 
@@ -109,6 +128,8 @@ module.exports = {
   globalLimiter,
   authLimiter,
   writeLimiter,
+  registerLimiter,
+  ratingLimiter,
   bodyLimit,
   noSqlSanitizer,
   verifyToken,

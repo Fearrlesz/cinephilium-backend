@@ -25,6 +25,7 @@ const Action = require('../src/models/Action');
 const Session = require('../src/models/Session');
 const { signAccessToken } = require('../src/utils/jwt');
 const mailer = require('../src/services/mailer');
+const { flagSybilAccounts } = require('../scripts/flag-sybil-accounts');
 
 let server;
 let baseUrl;
@@ -130,7 +131,10 @@ after(async () => {
 test('регистрация: 201, код на почту, вход запрещён до подтверждения', async () => {
   const registered = await call('/api/auth/register', {
     method: 'POST',
-    body: { email: 'new@example.com', password: 'password123', nickname: 'Новичок' }
+    body: {
+      email: 'new@example.com', password: 'password123', nickname: 'Новичок',
+      consent: { personalData: true, cookies: true }
+    }
   });
   assert.equal(registered.status, 201);
   assert.equal(registered.json.user.emailVerified, false);
@@ -488,7 +492,10 @@ test('сквозной сценарий фронтенда: регистраци
   const email = 'journey@example.com';
   const registered = await call('/api/auth/register', {
     method: 'POST',
-    body: { email, password: 'password123', nickname: 'Путешественник' }
+    body: {
+      email, password: 'password123', nickname: 'Путешественник',
+      consent: { personalData: true, cookies: true }
+    }
   });
   assert.equal(registered.status, 201);
 
@@ -608,4 +615,108 @@ test('сквозной сценарий фронтенда: регистраци
 
   const loggedOut = await call('/api/auth/logout', { method: 'POST', cookies: cookie });
   assert.equal(loggedOut.status, 200);
+});
+
+// ─────────────── СОГЛАСИЯ И АНТИ-НАКРУТКА ───────────────
+
+test('регистрация без согласий не создаёт пользователя', async () => {
+  const response = await call('/api/auth/register', {
+    method: 'POST',
+    body: { email: 'no-consent@example.com', password: 'password123', nickname: 'NoConsent' }
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json.error.code, 'VALIDATION_ERROR');
+  assert.equal(
+    await User.countDocuments({ email: 'no-consent@example.com' }),
+    0,
+    'пользователь создан без согласий'
+  );
+});
+
+test('согласия сохраняются вместе с аккаунтом', async () => {
+  const response = await call('/api/auth/register', {
+    method: 'POST',
+    body: {
+      email: 'consent@example.com',
+      password: 'password123',
+      nickname: 'Consent',
+      consent: { personalData: true, cookies: true, version: '1.0' }
+    }
+  });
+  assert.equal(response.status, 201);
+
+  const user = await User.findOne({ email: 'consent@example.com' });
+  assert.ok(user, 'пользователь не создан');
+  assert.equal(user.consent.personalData, true);
+  assert.equal(user.consent.cookies, true);
+  assert.equal(user.consent.version, '1.0');
+  assert.ok(user.consent.acceptedAt instanceof Date);
+  assert.ok(user.registeredIp, 'IP регистрации не сохранён');
+});
+
+test('с одного IP нельзя зарегистрировать больше 10 аккаунтов в час', async () => {
+  const headers = { 'x-forwarded-for': '198.51.100.77' };
+  let last;
+
+  for (let i = 0; i < 11; i += 1) {
+    last = await call('/api/auth/register', {
+      method: 'POST',
+      headers,
+      body: {
+        email: `farm${i}@example.com`,
+        password: 'password123',
+        nickname: `farm${i}`,
+        consent: { personalData: true, cookies: true }
+      }
+    });
+  }
+
+  assert.equal(last.status, 429, 'лимит регистраций с одного IP не сработал');
+});
+
+test('накрутка оценками возможна, но обнуляется детектором ферм', async () => {
+  const film = await Film.create({ tmdbId: 555, title: 'Накрученный' });
+  const farmIp = '203.0.113.250';
+
+  for (let i = 0; i < 10; i += 1) {
+    const user = await User.create({
+      email: `sybil${i}@example.com`,
+      password: 'x',
+      nickname: `sybil${i}`,
+      emailVerified: true,
+      registeredIp: farmIp
+    });
+    await Rating.create({
+      userId: user._id,
+      filmId: film._id,
+      scores: scores(10),
+      vibe: 10,
+      technicalScore: 100,
+      combinedScore: 100,
+      weight: 1
+    });
+  }
+
+  const inflated = await call(`/api/films/${film._id}`);
+  assert.equal(inflated.json.averageRating, 100);
+  assert.equal(inflated.json.votesCount, 10);
+
+  const top = await call('/api/films/top?limit=20');
+  assert.equal(String(top.json.films[0]._id), String(film._id), 'накрутка не подняла фильм в топ');
+
+  const result = await flagSybilAccounts({ minAccounts: 5, windowHours: 24 });
+  assert.equal(result.clusters, 1);
+  assert.equal(result.flaggedUsers, 10);
+
+  const cleaned = await call(`/api/films/${film._id}`);
+  assert.equal(cleaned.json.votesCount, 0, 'оценки фермы всё ещё учитываются');
+  assert.equal(cleaned.json.averageRating, 0);
+
+  const topAfter = await call('/api/films/top?limit=20');
+  assert.equal(topAfter.json.films.length, 0, 'фильм остался в топе после чистки');
+
+  const usersTop = await call('/api/top/users');
+  assert.equal(usersTop.json.items.length, 0, 'помеченные фермы остались в топе пользователей');
+  assert.equal(usersTop.json.pagination.total, 0);
 });

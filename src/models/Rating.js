@@ -42,7 +42,10 @@ const ratingSchema = new mongoose.Schema({
   technicalScore: { type: Number, min: 10, max: 100 },
   combinedScore:  { type: Number, min: 10, max: 100 },
   textReview:     { type: String, maxlength: 2000, default: '' },
-  likes:          [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+  likes:          [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+  // Анти-накрутка: вес голоса и IP, с которого ставилась оценка.
+  weight:         { type: Number, default: 1, min: 0, max: 1 },
+  ip:             { type: String, default: '' }
 }, { timestamps: true });
 
 ratingSchema.index({ userId: 1, filmId: 1 }, { unique: true });

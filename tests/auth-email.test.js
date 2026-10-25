@@ -67,7 +67,8 @@ test('register stores an unverified user and sends a hashed-code email', async (
     [mailer, 'sendVerificationCode', (email, code) => { mailed = { email, code }; }]
   ], async () => {
     const response = await post('auth/register', {
-      email: 'new@example.com', password: 'password123', nickname: 'NewUser'
+      email: 'new@example.com', password: 'password123', nickname: 'NewUser',
+      consent: { personalData: true, cookies: true }
     });
     const body = await response.json();
     assert.equal(response.status, 201);
@@ -246,7 +247,8 @@ test('unverified users cannot create reviews and verified users can', async () =
 test('registration rejects duplicates, resends pending verification, and validates passwords', async () => {
   await withOverrides([[User, 'findOne', async query => query.email ? { emailVerified: true } : null]], async () => {
     const response = await post('auth/register', {
-      email: 'existing@example.com', password: 'password123', nickname: 'Existing'
+      email: 'existing@example.com', password: 'password123', nickname: 'Existing',
+      consent: { personalData: true, cookies: true }
     });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).error.code, 'CONFLICT');
@@ -263,7 +265,8 @@ test('registration rejects duplicates, resends pending verification, and validat
     [mailer, 'sendVerificationCode', () => { sendCount += 1; }]
   ], async () => {
     const response = await post('auth/register', {
-      email: user.email, password: 'password123', nickname: user.nickname
+      email: user.email, password: 'password123', nickname: user.nickname,
+      consent: { personalData: true, cookies: true }
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).message, 'Проверьте почту для подтверждения');

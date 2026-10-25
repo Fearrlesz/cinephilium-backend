@@ -28,6 +28,15 @@ const countersSchema = new mongoose.Schema({
   likesReceived: { type: Number, default: 0 }
 }, { _id: false });
 
+// Согласия фиксируются вместе с аккаунтом: без них пользователь не создаётся.
+const consentSchema = new mongoose.Schema({
+  personalData: { type: Boolean, default: false },
+  cookies: { type: Boolean, default: false },
+  version: { type: String, default: '1.0' },
+  acceptedAt: Date,
+  ip: String
+}, { _id: false });
+
 const userSchema = new mongoose.Schema({
   email: {
     type: String,
@@ -46,6 +55,12 @@ const userSchema = new mongoose.Schema({
   totalPoints:    { type: Number, default: 0 },
   counters:       { type: countersSchema, default: () => ({}) },
   achievements:   { type: [String], default: [] },
+  consent:        { type: consentSchema, default: null },
+  registeredIp:   { type: String, default: '' },
+  // Вес голоса в агрегатах. 0 — оценки аккаунта не влияют на средние
+  // (выставляется скриптом flag-sybil-accounts для ферм).
+  trustWeight:    { type: Number, default: 1, min: 0, max: 1 },
+  flagged:        { type: Boolean, default: false },
   registeredAt:   { type: Date, default: Date.now }
 });
 

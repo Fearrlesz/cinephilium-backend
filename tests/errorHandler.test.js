@@ -57,7 +57,8 @@ test('duplicate registration returns conflict', async () => {
       body: JSON.stringify({
         email: 'existing@example.com',
         password: 'password123',
-        nickname: 'Existing'
+        nickname: 'Existing',
+        consent: { personalData: true, cookies: true }
       })
     });
     const body = await response.json();

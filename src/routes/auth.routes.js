@@ -3,7 +3,7 @@ const bcrypt   = require('bcryptjs');
 const { body } = require('express-validator');
 const User     = require('../models/User');
 const Session  = require('../models/Session');
-const { authLimiter } = require('../middleware/security');
+const { authLimiter, registerLimiter } = require('../middleware/security');
 const { authenticate } = require('../middleware/auth');
 const {
   EXCLUSIVE_NICKNAME,
@@ -13,7 +13,7 @@ const {
   JWT_REFRESH_TTL_DAYS
 } = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
-const { UnauthorizedError, ConflictError, AppError } = require('../utils/errors');
+const { UnauthorizedError, ConflictError, ValidationError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 const { generateNumericCode, generateResetToken, hashToken } = require('../utils/tokens');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
@@ -86,12 +86,18 @@ function updateVerification(user, now) {
 }
 
 // POST /api/auth/register
-router.post('/register', authLimiter, [
+router.post('/register', registerLimiter, authLimiter, [
   body('email').isEmail().normalizeEmail(),
   body('password').isLength({ min: 8 }).withMessage('Пароль должен быть минимум 8 символов'),
   body('nickname').notEmpty().isLength({ max: 50 }).withMessage('Никнейм не длиннее 50 символов')
 ], asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
+
+  // Согласия проверяются ДО любого обращения к БД: без них аккаунт не создаётся.
+  const consent = req.body.consent;
+  if (!consent || consent.personalData !== true || consent.cookies !== true) {
+    throw new ValidationError('Нужно согласие на обработку персональных данных и использование cookie');
+  }
 
   const { email, password, nickname } = req.body;
   const existingEmail = await User.findOne({ email });
@@ -115,7 +121,20 @@ router.post('/register', authLimiter, [
   if (existingNickname) throw new ConflictError('Пользователь уже существует');
 
   const hashedPassword = await bcrypt.hash(password, 10);
-  const user = new User({ email, password: hashedPassword, nickname, emailVerified: false });
+  const user = new User({
+    email,
+    password: hashedPassword,
+    nickname,
+    emailVerified: false,
+    registeredIp: req.ip,
+    consent: {
+      personalData: true,
+      cookies: true,
+      version: String(consent.version || '1.0'),
+      acceptedAt: new Date(),
+      ip: req.ip
+    }
+  });
   updateVerification(user, new Date());
   await user.save();
 
