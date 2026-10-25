@@ -72,10 +72,12 @@ tests/                node:test
   logout-all, forgot-password, reset-password, me
 - `/api/films` — список, детали, top, поиск, импорт из TMDB
 - `/api/ratings`, `/api/reviews`, `/api/comments` — оценки, рецензии, комментарии
-- `/api/users`, `/api/top` — профили и рейтинги
+- `/api/users` — профиль по id (`/users/:id`) или никнейму (`/users/nickname/:nickname`),
+  достижения (`/users/:id/achievements`, `/users/me/achievements`)
+- `/api/top` — рейтинги
 - `/api/admin` — активация админа и модерация
 - `/api/events` — лента событий
-- `/api/tmdb-image` — прокси изображений TMDB
+- `/api/tmdb-image` — прокси изображений TMDB (алиас `/api/poster/:size/*` для старых ссылок)
 
 Авторизация: `Authorization: Bearer <accessToken>`; refresh-токен приходит в HttpOnly cookie
 `refresh_token` (path `/api/auth`) и обновляется через `POST /api/auth/refresh`.

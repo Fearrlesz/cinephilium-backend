@@ -483,3 +483,129 @@ test('алиас /api/poster/:size/* валидирует размер', async (
   const badSize = await call('/api/poster/huge/x.jpg');
   assert.equal(badSize.status, 400);
 });
+
+test('сквозной сценарий фронтенда: регистрация → оценка → рецензия → модерация', async () => {
+  const email = 'journey@example.com';
+  const registered = await call('/api/auth/register', {
+    method: 'POST',
+    body: { email, password: 'password123', nickname: 'Путешественник' }
+  });
+  assert.equal(registered.status, 201);
+
+  const verified = await call('/api/auth/verify-email', {
+    method: 'POST',
+    body: { email, code: verificationCodes.get(email) }
+  });
+  assert.equal(verified.status, 200);
+  const token = verified.json.accessToken;
+  const cookie = refreshCookieOf(verified);
+
+  const me = await call('/api/auth/me', { token });
+  assert.equal(me.status, 200);
+  assert.ok(me.json._id);
+
+  const film = await Film.create({ tmdbId: 777, title: 'Сквозной', posterPath: '/z.jpg' });
+
+  const list = await call('/api/films?page=1&limit=20&sort=technical');
+  assert.equal(list.status, 200);
+  assert.ok(Array.isArray(list.json.films));
+
+  const top = await call('/api/films/top?sort=combined&limit=5');
+  assert.equal(top.status, 200);
+  assert.ok(Array.isArray(top.json.films));
+
+  const detail = await call(`/api/films/${film._id}`);
+  assert.equal(detail.status, 200);
+  assert.ok(detail.json.poster, 'poster пустой — фронт покажет заглушку');
+  assert.ok(detail.json.posterUrl);
+
+  const filmUsers = await call(`/api/films/${film._id}/users`);
+  assert.ok(Array.isArray(filmUsers.json));
+
+  const rated = await call('/api/ratings', {
+    method: 'POST', token,
+    body: {
+      filmId: String(film._id),
+      scores: scores(9),
+      vibe: 7,
+      genrePreset: 'drama',
+      blockWeights: [25, 20, 20, 15, 20],
+      textReview: 'Хорошо'
+    }
+  });
+  assert.equal(rated.status, 201);
+
+  const detailAfter = await call(`/api/films/${film._id}`, { token });
+  assert.ok(detailAfter.json.userRating, 'userRating не вернулся фронту');
+
+  const review = await call('/api/reviews', {
+    method: 'POST', token,
+    body: {
+      filmId: String(film._id),
+      ratingId: String(rated.json.rating._id),
+      title: 'Заголовок',
+      text: 'x'.repeat(500)
+    }
+  });
+  assert.equal(review.status, 200);
+
+  const anonReviews = await call(`/api/reviews/${film._id}`);
+  assert.equal(anonReviews.json.length, 0, 'pending-рецензия попала в публичный список');
+
+  const comment = await call('/api/comments', {
+    method: 'POST', token,
+    body: { filmId: String(film._id), text: 'Комментарий' }
+  });
+  assert.equal(comment.status, 200);
+
+  const comments = await call(`/api/comments/${film._id}`);
+  assert.equal(comments.status, 200);
+  assert.ok(Array.isArray(comments.json));
+
+  const myRatings = await call('/api/ratings/user', { token });
+  assert.equal(myRatings.status, 200);
+  assert.equal(myRatings.json.length, 1);
+
+  const myReviews = await call('/api/reviews/user', { token });
+  assert.equal(myReviews.status, 200);
+  assert.equal(myReviews.json.length, 1);
+
+  const publicProfile = await call(`/api/users/${me.json._id}`);
+  assert.equal(publicProfile.status, 200);
+  assert.equal(publicProfile.json.reviews.length, 0, 'чужой видит черновик');
+
+  const ownProfile = await call(`/api/users/${me.json._id}`, { token });
+  assert.equal(ownProfile.json.reviews.length, 1);
+
+  const byNickname = await call('/api/users/nickname/' + encodeURIComponent('Путешественник'));
+  assert.equal(byNickname.status, 200);
+  assert.ok(byNickname.json._id);
+
+  const achievements = await call('/api/users/me/achievements', { token });
+  assert.equal(achievements.status, 200);
+
+  const topUsers = await call('/api/top/users');
+  assert.ok(Array.isArray(topUsers.json.items));
+
+  const events = await call('/api/events');
+  assert.ok(Array.isArray(events.json));
+  assert.ok(events.json.length >= 1, 'лента событий пуста');
+
+  const admin = await createUser({ isAdmin: true });
+  const adminToken = signAccessToken(admin._id);
+
+  const pendingReviews = await call('/api/admin/pending/reviews', { token: adminToken });
+  assert.equal(pendingReviews.status, 200);
+  assert.equal(pendingReviews.json.length, 1);
+
+  const approved = await call(`/api/admin/reviews/${review.json._id}/approve`, {
+    method: 'PUT', token: adminToken
+  });
+  assert.equal(approved.status, 200);
+
+  const afterApprove = await call(`/api/reviews/${film._id}`);
+  assert.equal(afterApprove.json.length, 1);
+
+  const loggedOut = await call('/api/auth/logout', { method: 'POST', cookies: cookie });
+  assert.equal(loggedOut.status, 200);
+});
