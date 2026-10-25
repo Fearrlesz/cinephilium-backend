@@ -1,5 +1,5 @@
 process.env.NODE_ENV = 'test';
-process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test';
+process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test-counters';
 process.env.JWT_ACCESS_SECRET = 'test-jwt-access-secret';
 process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.TMDB_API_KEY = 'test-tmdb-key';

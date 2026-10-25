@@ -1,6 +1,8 @@
 process.env.NODE_ENV = 'test';
-process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test';
+process.env.MONGODB_URI = 'mongodb://127.0.0.1/cinephilium-test-poster';
 process.env.JWT_SECRET = 'test-jwt-secret';
+process.env.JWT_ACCESS_SECRET = 'test-jwt-access-secret';
+process.env.JWT_REFRESH_SECRET = 'test-jwt-refresh-secret';
 process.env.TMDB_API_KEY = 'test-tmdb-key';
 process.env.ADMIN_SECRET_KEY = 'test-admin-key';
 process.env.IMAGE_PROXY_BASE_URL = 'https://film.ru';
