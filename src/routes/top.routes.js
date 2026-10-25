@@ -1,46 +1,41 @@
 const express = require('express');
 const User    = require('../models/User');
 
+const asyncHandler = require('../utils/asyncHandler');
+
 const router = express.Router();
 
 // GET /api/top/users
-router.get('/users', async (req, res) => {
+router.get('/users', asyncHandler(async (req, res, next) => {
   try {
-    const limit = parseInt(req.query.limit) || 20;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const total = await User.countDocuments();
 
     const users = await User.aggregate([
       { $project: { password: 0 } },
       { $sort: { totalPoints: -1 } },
+      { $skip: (page - 1) * limit },
       { $limit: limit },
-      { $lookup: { from: 'ratings',  localField: '_id', foreignField: 'userId', as: 'ratings' } },
-      { $lookup: { from: 'reviews',  localField: '_id', foreignField: 'userId', as: 'reviews' } },
-      { $lookup: { from: 'comments', localField: '_id', foreignField: 'userId', as: 'comments' } },
-      {
-        $lookup: {
-          from: 'actions',
-          let: { userId: '$_id' },
-          pipeline: [
-            { $match: { $expr: { $and: [{ $eq: ['$userId', '$$userId'] }, { $eq: ['$type', 'like'] }] } } }
-          ],
-          as: 'likesReceived'
-        }
-      },
-      {
-        $addFields: {
-          ratingsCount:  { $size: '$ratings' },
-          reviewsCount:  { $size: '$reviews' },
-          commentsCount: { $size: '$comments' },
-          likesReceived: { $size: '$likesReceived' }
-        }
-      },
-      { $project: { ratings: 0, reviews: 0, comments: 0, likesReceived: 0 } }
+      { $project: {
+        _id: 1,
+        nickname: 1,
+        avatar: 1,
+        isAdmin: 1,
+        totalPoints: 1,
+        achievements: 1,
+        registeredAt: 1,
+        counters: 1
+      } }
     ]);
 
-    res.json(users);
+    res.json({
+      items: users,
+      pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    });
   } catch (error) {
-    console.error('Ошибка загрузки топа:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

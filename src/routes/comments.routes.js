@@ -1,13 +1,19 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator'); 
+const { body } = require('express-validator');
 const Comment = require('../models/Comment');
 const Film    = require('../models/Film');
-const { authenticate }     = require('../middleware/auth');
+const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const User = require('../models/User');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { existsById, updateAchievements } = require('../utils/helpers');
+
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
 
@@ -16,43 +22,41 @@ router.post('/', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('text').notEmpty().isLength({ max: 1000 }).withMessage('Текст не длиннее 1000 символов'),
   body('parentId').optional().isMongoId().withMessage('Некорректный ID родительского комментария')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+], authenticate, requireVerified, asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const { filmId, text, parentId } = req.body;
 
     const film = await Film.findById(filmId);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+    if (!film) throw new NotFoundError('Фильм не найден');
 
     if (parentId) {
       const parentExists = await existsById(Comment, parentId);
-      if (!parentExists) return res.status(404).json({ error: 'Родительский комментарий не найден' });
+      if (!parentExists) throw new NotFoundError('Родительский комментарий не найден');
     }
 
     const comment = new Comment({ userId: req.userId, filmId, text, parentId, status: 'pending' });
     await comment.save();
+    await incCounter(req.userId, 'comments', 1);
 
     const commentWithUser = await Comment.findById(comment._id).populate('userId', 'nickname isAdmin');
     res.json(commentWithUser);
   } catch (error) {
-    console.error('Ошибка добавления комментария:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/comments/:filmId
-router.get('/:filmId', validateObjectId('filmId'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     let isAdmin = false;
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
       } catch { /* игнор */ }
@@ -84,40 +88,38 @@ router.get('/:filmId', validateObjectId('filmId'), async (req, res) => {
 
     res.json(commentsWithReplies);
   } catch (error) {
-    console.error('Ошибка загрузки комментариев:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // POST /api/comments/:id/like
-router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const comment = await Comment.findById(req.params.id);
-    if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+    if (!comment) throw new NotFoundError('Комментарий не найден');
 
     if (comment.userId.equals(req.userId)) {
-      return res.status(400).json({ error: 'Нельзя лайкать себя' });
+      throw new ValidationError('Нельзя лайкать себя');
     }
 
     if (comment.likes.includes(req.userId)) {
-      return res.status(400).json({ error: 'Вы уже лайкнули этот комментарий' });
+      throw new ValidationError('Вы уже лайкнули этот комментарий');
     }
 
     comment.likes.push(req.userId);
     await comment.save();
 
+    await incCounter(comment.userId, 'likesReceived', 1);
     const points = req.isAdmin ? 3 : 1;
     await addPoints(comment.userId, req.userId, 'like', points, comment._id);
     await updateAchievements(comment.userId);
 
     res.json({ liked: true, likes: comment.likes.length });
   } catch (error) {
-    console.error('Ошибка лайка комментария:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

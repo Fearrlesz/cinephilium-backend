@@ -1,14 +1,19 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { body, validationResult } = require('express-validator');
+const { body } = require('express-validator');
 const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { roundTenth } = require('../config/scoring');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError, ValidationError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
 
@@ -17,7 +22,7 @@ const router = express.Router();
 // ─────────────────────────────────────────────
 
 // GET /api/films/top
-router.get('/top', async (req, res) => {
+router.get('/top', asyncHandler(async (req, res, next) => {
   try {
     const sort  = req.query.sort || 'technical';
     const limit = Math.min(parseInt(req.query.limit) || 5, 20);
@@ -60,37 +65,34 @@ router.get('/top', async (req, res) => {
 
     res.json({ films, sort: sortField, limit });
   } catch (error) {
-    console.error('Ошибка загрузки топа:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/films/search-by-title
 // ⚠️ ДОЛЖЕН быть до /:id — иначе :id перехватит "search-by-title"
-router.get('/search-by-title', async (req, res) => {
+router.get('/search-by-title', asyncHandler(async (req, res, next) => {
   try {
     const title = req.query.title;
-    if (!title) return res.status(400).json({ error: 'Название фильма не указано' });
+    if (!title) throw new ValidationError('Название фильма не указано');
 
     let film = await Film.findOne({ title });
     if (!film) film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+    if (!film) throw new NotFoundError('Фильм не найден');
 
     res.json(film);
   } catch (error) {
-    console.error('Ошибка поиска фильма по названию:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/films/:id
-router.get('/:id', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const film = await Film.findById(req.params.id);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+    if (!film) throw new NotFoundError('Фильм не найден');
 
     const ratingData = await Rating.aggregate([
       { $match: { filmId: film._id } },
@@ -114,7 +116,7 @@ router.get('/:id', validateObjectId('id'), async (req, res) => {
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
       } catch { /* игнор */ }
     }
@@ -128,16 +130,14 @@ router.get('/:id', validateObjectId('id'), async (req, res) => {
       userRating
     });
   } catch (error) {
-    console.error('Ошибка загрузки фильма:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/films/:id/ratings
 // 🐛 ФИКС: добавлена валидация :id
-router.get('/:id/ratings', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
@@ -169,16 +169,14 @@ router.get('/:id/ratings', validateObjectId('id'), async (req, res) => {
 
     res.json(formattedRatings);
   } catch (err) {
-    console.error('Ошибка загрузки оценок:', err);
-    res.status(500).json({ message: 'Ошибка сервера' });
+    throw err;
   }
-});
+}));
 
 // GET /api/films/:id/users
 // 🐛 ФИКС: добавлена валидация :id
-router.get('/:id/users', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const ratings = await Rating.find({ filmId: req.params.id })
@@ -202,13 +200,12 @@ router.get('/:id/users', validateObjectId('id'), async (req, res) => {
 
     res.json(result);
   } catch (err) {
-    console.error('Ошибка загрузки пользователей фильма:', err);
-    res.status(500).json({ message: 'Ошибка сервера' });
+    throw err;
   }
-});
+}));
 
 // GET /api/films
-router.get('/', async (req, res) => {
+router.get('/', asyncHandler(async (req, res, next) => {
   try {
     const sort  = req.query.sort || 'technical';
     const page  = parseInt(req.query.page)  || 1;
@@ -254,17 +251,15 @@ router.get('/', async (req, res) => {
       sort: sortField
     });
   } catch (error) {
-    console.error('Ошибка загрузки фильмов:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // POST /api/films/import
 router.post('/import', writeLimiter, authenticate, [
   body('tmdbId').isInt({ min: 1 }).withMessage('Некорректный ID фильма')
-], async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+], asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const { tmdbId } = req.body;
@@ -280,7 +275,7 @@ router.post('/import', writeLimiter, authenticate, [
     const filmData = await ruResponse.json();
     const enData   = enResponse.ok ? await enResponse.json() : {};
 
-    if (!filmData.title) return res.status(404).json({ error: 'Фильм не найден в TMDB' });
+    if (!filmData.title) throw new NotFoundError('Фильм не найден в TMDB');
 
     const posterPath = filmData.poster_path || enData.poster_path || null;
 
@@ -325,9 +320,8 @@ router.post('/import', writeLimiter, authenticate, [
       message: 'Фильм успешно добавлен'
     });
   } catch (error) {
-    console.error('Ошибка импорта фильма:', error);
-    res.status(500).json({ error: 'Ошибка импорта фильма' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

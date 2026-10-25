@@ -1,35 +1,39 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { body } = require('express-validator');
 const User    = require('../models/User');
 const Comment = require('../models/Comment');
 const Review  = require('../models/Review');
 const { authenticate, isAdmin } = require('../middleware/auth');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError, ForbiddenError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
 
 // POST /api/admin/make — активация админа через секретный ключ
 router.post('/make', [
   body('secretKey').notEmpty().withMessage('Введите секретный ключ')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+], authenticate, asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const { secretKey } = req.body;
     const adminSecret = process.env.ADMIN_SECRET_KEY;
 
     if (!adminSecret) {
-      return res.status(500).json({ error: 'Секретный ключ не настроен на сервере' });
+      throw new Error('ADMIN_SECRET_KEY is not configured');
     }
 
     if (secretKey !== adminSecret) {
-      return res.status(403).json({ error: 'Неверный секретный ключ' });
+      throw new ForbiddenError('Неверный секретный ключ');
     }
 
     const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (!user) throw new NotFoundError('Пользователь не найден');
 
     if (user.isAdmin) {
       return res.json({ message: 'Вы уже являетесь администратором', isAdmin: true });
@@ -48,49 +52,46 @@ router.post('/make', [
       totalPoints: updatedUser.totalPoints
     });
   } catch (error) {
-    console.error('Ошибка активации админа:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // ─── МОДЕРАЦИЯ ───────────────────────────────────────────
 
 // GET /api/admin/pending/comments
-router.get('/pending/comments', authenticate, isAdmin, async (req, res) => {
+router.get('/pending/comments', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
     const comments = await Comment.find({ status: 'pending' })
       .populate('userId', 'nickname')
       .populate('filmId', 'title');
     res.json(comments);
   } catch (error) {
-    console.error('Ошибка загрузки комментариев на модерацию:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/admin/pending/reviews
-router.get('/pending/reviews', authenticate, isAdmin, async (req, res) => {
+router.get('/pending/reviews', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
     const reviews = await Review.find({ status: 'pending' })
       .populate('userId', 'nickname')
       .populate('filmId', 'title');
     res.json(reviews);
   } catch (error) {
-    console.error('Ошибка загрузки рецензий на модерацию:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // PUT /api/admin/comments/:id/approve
-router.put('/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
+router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const comment = await Comment.findByIdAndUpdate(
-      req.params.id,
-      { status: 'approved' },
-      { new: true }
-    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
-
-    if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+    const before = await Comment.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Комментарий не найден');
+    await Comment.updateOne({ _id: req.params.id }, { $set: { status: 'approved' } });
+    const comment = await Comment.findById(req.params.id)
+      .populate('userId', 'nickname isAdmin')
+      .populate('filmId', 'title');
+    if (before.status !== 'approved') await incCounter(before.userId, 'commentsApproved', 1);
 
     const authorIsAdmin = comment.userId?.isAdmin || false;
     const authorPoints = authorIsAdmin ? 10 : 2;
@@ -101,39 +102,35 @@ router.put('/comments/:id/approve', authenticate, isAdmin, async (req, res) => {
 
     res.json(comment);
   } catch (error) {
-    console.error('Ошибка одобрения комментария:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // PUT /api/admin/comments/:id/reject
-router.put('/comments/:id/reject', authenticate, isAdmin, async (req, res) => {
+router.put('/comments/:id/reject', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const comment = await Comment.findByIdAndUpdate(
-      req.params.id,
-      { status: 'rejected' },
-      { new: true }
-    ).populate('userId', 'nickname');
-
-    if (!comment) return res.status(404).json({ error: 'Комментарий не найден' });
+    const before = await Comment.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Комментарий не найден');
+    await Comment.updateOne({ _id: req.params.id }, { $set: { status: 'rejected' } });
+    const comment = await Comment.findById(req.params.id).populate('userId', 'nickname');
+    if (before.status === 'approved') await incCounter(before.userId, 'commentsApproved', -1);
 
     res.json(comment);
   } catch (error) {
-    console.error('Ошибка отклонения комментария:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // PUT /api/admin/reviews/:id/approve
-router.put('/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
+router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const review = await Review.findByIdAndUpdate(
-      req.params.id,
-      { status: 'approved' },
-      { new: true }
-    ).populate('userId', 'nickname isAdmin').populate('filmId', 'title');
-
-    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    const before = await Review.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Рецензия не найдена');
+    await Review.updateOne({ _id: req.params.id }, { $set: { status: 'approved' } });
+    const review = await Review.findById(req.params.id)
+      .populate('userId', 'nickname isAdmin')
+      .populate('filmId', 'title');
+    if (before.status !== 'approved') await incCounter(before.userId, 'reviewsApproved', 1);
 
     const authorIsAdmin = review.userId?.isAdmin || false;
     const authorPoints = authorIsAdmin ? 50 : 30;
@@ -144,27 +141,25 @@ router.put('/reviews/:id/approve', authenticate, isAdmin, async (req, res) => {
 
     res.json(review);
   } catch (error) {
-    console.error('Ошибка одобрения рецензии:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // PUT /api/admin/reviews/:id/reject
-router.put('/reviews/:id/reject', authenticate, isAdmin, async (req, res) => {
+router.put('/reviews/:id/reject', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
-    const review = await Review.findByIdAndUpdate(
-      req.params.id,
-      { status: 'rejected' },
-      { new: true }
-    ).populate('userId', 'nickname').populate('filmId', 'title');
-
-    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    const before = await Review.findById(req.params.id).select('status userId').lean();
+    if (!before) throw new NotFoundError('Рецензия не найдена');
+    await Review.updateOne({ _id: req.params.id }, { $set: { status: 'rejected' } });
+    const review = await Review.findById(req.params.id)
+      .populate('userId', 'nickname')
+      .populate('filmId', 'title');
+    if (before.status === 'approved') await incCounter(before.userId, 'reviewsApproved', -1);
 
     res.json(review);
   } catch (error) {
-    console.error('Ошибка отклонения рецензии:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

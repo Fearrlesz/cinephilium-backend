@@ -1,14 +1,20 @@
 const express = require('express');
-const { body, validationResult } = require('express-validator');
+const { body } = require('express-validator');
 const Review  = require('../models/Review');
 const Rating  = require('../models/Rating');
 const Film    = require('../models/Film');
 const User    = require('../models/User');
-const { authenticate }     = require('../middleware/auth');
+const { authenticate, requireVerified } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer, verifyToken } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { addPoints } = require('../utils/points');
+const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
+
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError, ForbiddenError, ValidationError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
 
@@ -21,24 +27,24 @@ router.post('/', writeLimiter, [
     .notEmpty().withMessage('Текст рецензии обязателен')
     .isLength({ min: 450 }).withMessage('Текст рецензии должен быть не короче 450 символов')
     .isLength({ max: 15000 }).withMessage('Текст рецензии не длиннее 15000 символов')
-], authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+], authenticate, requireVerified, asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const { filmId, ratingId, title, text } = req.body;
 
     const film = await Film.findById(filmId);
-    if (!film) return res.status(404).json({ error: 'Фильм не найден' });
+    if (!film) throw new NotFoundError('Фильм не найден');
 
     const rating = await Rating.findOne({ _id: ratingId, userId: req.userId });
-    if (!rating) return res.status(403).json({ error: 'Вы не можете использовать чужую оценку для рецензии' });
+    if (!rating) throw new ForbiddenError('Вы не можете использовать чужую оценку для рецензии');
 
     const existing = await Review.findOne({ userId: req.userId, filmId });
-    if (existing) return res.status(400).json({ error: 'Вы уже написали рецензию на этот фильм' });
+    if (existing) throw new ValidationError('Вы уже написали рецензию на этот фильм');
 
     const review = new Review({ userId: req.userId, filmId, ratingId, title, text, status: 'pending' });
     await review.save();
+    await incCounter(req.userId, 'reviews', 1);
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
@@ -47,13 +53,12 @@ router.post('/', writeLimiter, [
 
     res.json(reviewWithUser);
   } catch (error) {
-    console.error('Ошибка добавления рецензии:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/reviews/user
-router.get('/user', authenticate, async (req, res) => {
+router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
   try {
     const reviews = await Review.find({ userId: req.userId })
       .populate('userId', 'nickname isAdmin')
@@ -63,15 +68,13 @@ router.get('/user', authenticate, async (req, res) => {
 
     res.json(reviews);
   } catch (error) {
-    console.error('Ошибка получения рецензий пользователя:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/reviews/details/:id
-router.get('/details/:id', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const review = await Review.findById(req.params.id)
@@ -79,26 +82,24 @@ router.get('/details/:id', validateObjectId('id'), async (req, res) => {
       .populate('filmId', 'title poster description director actors genres year')
       .populate('ratingId');
 
-    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    if (!review) throw new NotFoundError('Рецензия не найдена');
 
     res.json(review);
   } catch (error) {
-    console.error('Ошибка загрузки рецензии:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/reviews/:filmId
-router.get('/:filmId', validateObjectId('filmId'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     let isAdmin = false;
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         const user = await User.findById(decoded.userId);
         isAdmin = user?.isAdmin || false;
       } catch { /* игнор */ }
@@ -117,40 +118,38 @@ router.get('/:filmId', validateObjectId('filmId'), async (req, res) => {
 
     res.json(reviews);
   } catch (error) {
-    console.error('Ошибка загрузки рецензий:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // POST /api/reviews/:id/like
-router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.post('/:id/like', writeLimiter, validateObjectId('id'), authenticate, asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const review = await Review.findById(req.params.id);
-    if (!review) return res.status(404).json({ error: 'Рецензия не найдена' });
+    if (!review) throw new NotFoundError('Рецензия не найдена');
 
     if (review.userId.equals(req.userId)) {
-      return res.status(400).json({ error: 'Нельзя лайкать себя' });
+      throw new ValidationError('Нельзя лайкать себя');
     }
 
     if (review.likes.includes(req.userId)) {
-      return res.status(400).json({ error: 'Вы уже лайкнули эту рецензию' });
+      throw new ValidationError('Вы уже лайкнули эту рецензию');
     }
 
     review.likes.push(req.userId);
     await review.save();
 
+    await incCounter(review.userId, 'likesReceived', 1);
     const points = req.isAdmin ? 20 : 5;
     await addPoints(review.userId, req.userId, 'like', points, review._id);
     await updateAchievements(review.userId);
 
     res.json({ liked: true, likes: review.likes.length });
   } catch (error) {
-    console.error('Ошибка лайка рецензии:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

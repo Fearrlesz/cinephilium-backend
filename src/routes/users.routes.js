@@ -1,26 +1,29 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { validationResult } = require('express-validator');
 const User    = require('../models/User');
 const Rating  = require('../models/Rating');
 const Review  = require('../models/Review');
 const Comment = require('../models/Comment');
 const { validateObjectId } = require('../middleware/validate');
-const { extractBearer, verifyToken } = require('../middleware/security');
+const { extractBearer } = require('../middleware/security');
+const { verifyAccessToken } = require('../utils/jwt');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const { getUserAchievements } = require('../utils/achievements');
+
+const asyncHandler = require('../utils/asyncHandler');
+const { NotFoundError } = require('../utils/errors');
+const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
 
 // GET /api/users/:id
-router.get('/:id', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const userId = req.params.id;
     const user = await User.findById(userId).select('-password');
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (!user) throw new NotFoundError('Пользователь не найден');
 
     const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
     const reviews  = await Review.find({ userId })
@@ -32,7 +35,7 @@ router.get('/:id', validateObjectId('id'), async (req, res) => {
     const token = extractBearer(req);
     if (token) {
       try {
-        const decoded = verifyToken(token);
+        const decoded = verifyAccessToken(token);
         // 🐛 ФИКС: приведение к строке для надёжного сравнения
         isOwnProfile = String(decoded.userId) === String(userId);
       } catch { /* игнор */ }
@@ -80,25 +83,23 @@ router.get('/:id', validateObjectId('id'), async (req, res) => {
       }))
     });
   } catch (error) {
-    console.error('Ошибка загрузки профиля:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 // GET /api/users/:id/achievements
-router.get('/:id/achievements', validateObjectId('id'), async (req, res) => {
-  const errors = validationResult(req);
-  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+router.get('/:id/achievements', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
   try {
     const userId = req.params.id;
     const userObjectId = new mongoose.Types.ObjectId(userId);
-    const user = await User.findById(userId).select('achievements nickname');
-    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    const user = await User.findById(userId).select('achievements nickname counters');
+    if (!user) throw new NotFoundError('Пользователь не найден');
 
-    const ratingsCount  = await Rating.countDocuments({ userId });
-    const reviewsCount  = await Review.countDocuments({ userId, status: 'approved' });
-    const commentsCount = await Comment.countDocuments({ userId, status: 'approved' });
+    const ratingsCount  = user.counters?.ratings || 0;
+    const reviewsCount  = user.counters?.reviewsApproved || 0;
+    const commentsCount = user.counters?.commentsApproved || 0;
 
     const allPossible = await getUserAchievements(
       userObjectId,
@@ -115,9 +116,8 @@ router.get('/:id/achievements', validateObjectId('id'), async (req, res) => {
       progress: { ratings: ratingsCount, reviews: reviewsCount, comments: commentsCount }
     });
   } catch (error) {
-    console.error('Ошибка получения достижений:', error);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    throw error;
   }
-});
+}));
 
 module.exports = router;

@@ -1,5 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const cookieParser = require('cookie-parser');
 
 // Безопасность
 const {
@@ -23,6 +24,8 @@ const adminRoutes    = require('./routes/admin.routes');
 const tmdbRoutes     = require('./routes/tmdb.routes');
 const eventsRoutes   = require('./routes/events.routes');
 const topRoutes      = require('./routes/top.routes');
+const { notFoundHandler, errorHandler } = require('./middleware/errorHandler');
+const asyncHandler = require('./utils/asyncHandler');
 
 mongoose.set('strictQuery', false);
 
@@ -39,7 +42,8 @@ app.use(corsMiddleware);
 app.use(helmetMiddleware);                    // 1. заголовки
 app.use(globalLimiter);                       // 2. общий лимит запросов
 app.use(express.json({ limit: bodyLimit }));  // 3. парсинг тела с лимитом
-app.use(noSqlSanitizer);                      // 4. санитайз ПОСЛЕ парсинга
+app.use(cookieParser());                       // 4. cookie для refresh-токенов
+app.use(noSqlSanitizer);                      // 5. санитайз ПОСЛЕ парсинга
 
 // ===== МАРШРУТЫ =====
 app.use('/api/auth',     authRoutes);
@@ -57,5 +61,14 @@ app.use('/api/top',      topRoutes);
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+if (process.env.NODE_ENV === 'test') {
+  app.get('/api/test/internal-error', asyncHandler(async () => {
+    throw new Error('boom');
+  }));
+}
+
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 module.exports = app;

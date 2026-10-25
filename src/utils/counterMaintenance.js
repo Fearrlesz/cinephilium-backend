@@ -1,0 +1,77 @@
+const User = require('../models/User');
+const Rating = require('../models/Rating');
+const Review = require('../models/Review');
+const Comment = require('../models/Comment');
+const Action = require('../models/Action');
+
+const BATCH_SIZE = 500;
+const unsupportedCounters = {
+  filmLikes: 0,
+  watchlist: 0,
+  followers: 0,
+  following: 0
+};
+
+async function countUserCounters(userId) {
+  const [ratings, reviews, reviewsApproved, comments, commentsApproved, likesReceived] = await Promise.all([
+    Rating.countDocuments({ userId }),
+    Review.countDocuments({ userId }),
+    Review.countDocuments({ userId, status: 'approved' }),
+    Comment.countDocuments({ userId }),
+    Comment.countDocuments({ userId, status: 'approved' }),
+    Action.countDocuments({ userId, type: 'like' })
+  ]);
+
+  return {
+    ratings,
+    reviews,
+    reviewsApproved,
+    comments,
+    commentsApproved,
+    ...unsupportedCounters,
+    likesReceived
+  };
+}
+
+async function processUsers({ reconcile = false } = {}) {
+  let processed = 0;
+  let errors = 0;
+  let batch = [];
+
+  async function processBatch(users) {
+    await Promise.all(users.map(async user => {
+      try {
+        const expected = await countUserCounters(user._id);
+        if (reconcile) {
+          for (const [field, value] of Object.entries(expected)) {
+            const actual = user.counters?.[field] || 0;
+            if (actual !== value) {
+              console.log(`userId=${user._id} field=${field} expected=${value} actual=${actual}`);
+            }
+          }
+        }
+
+        await User.updateOne({ _id: user._id }, { $set: { counters: expected } });
+        processed += 1;
+      } catch (error) {
+        errors += 1;
+        console.error(`userId=${user._id} error=${error.message}`);
+      }
+    }));
+  }
+
+  const cursor = User.find().select('_id counters').lean().cursor({ batchSize: BATCH_SIZE });
+  for await (const user of cursor) {
+    batch.push(user);
+    if (batch.length === BATCH_SIZE) {
+      await processBatch(batch);
+      batch = [];
+    }
+  }
+  if (batch.length > 0) await processBatch(batch);
+
+  console.log(`processed: ${processed}, errors: ${errors}`);
+  return { processed, errors };
+}
+
+module.exports = { countUserCounters, processUsers };
