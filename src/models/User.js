@@ -64,4 +64,7 @@ const userSchema = new mongoose.Schema({
   registeredAt:   { type: Date, default: Date.now }
 });
 
+userSchema.index({ registeredIp: 1, registeredAt: -1 });
+userSchema.index({ flagged: 1 });
+
 module.exports = mongoose.model('User', userSchema);
