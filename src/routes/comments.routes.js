@@ -2,7 +2,7 @@ const express = require('express');
 const { body } = require('express-validator');
 const Comment = require('../models/Comment');
 const Film    = require('../models/Film');
-const { authenticate, requireVerified } = require('../middleware/auth');
+const { authenticate } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
@@ -22,7 +22,7 @@ router.post('/', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('text').notEmpty().isLength({ max: 1000 }).withMessage('Текст не длиннее 1000 символов'),
   body('parentId').optional().isMongoId().withMessage('Некорректный ID родительского комментария')
-], authenticate, requireVerified, asyncHandler(async (req, res, next) => {
+], authenticate, asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
   try {

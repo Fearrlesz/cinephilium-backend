@@ -1,7 +1,13 @@
 node_modules/
+
+# Секреты: любой реальный env-файл игнорируется, в репозитории живёт только пример.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+
 npm-debug.log*
 .DS_Store
 coverage/
+.tooling/
+.cache/
+.npm-cache/

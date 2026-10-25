@@ -80,7 +80,6 @@ test('1. login returns access token and stores refresh session in an HttpOnly co
     email: 'login@example.com',
     nickname: 'Login',
     password,
-    emailVerified: true,
     isAdmin: false,
     totalPoints: 0
   };

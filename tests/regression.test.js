@@ -24,16 +24,15 @@ const Event = require('../src/models/Event');
 const Action = require('../src/models/Action');
 const Session = require('../src/models/Session');
 const { signAccessToken } = require('../src/utils/jwt');
-const mailer = require('../src/services/mailer');
+const { generateInviteCode, hashToken } = require('../src/utils/tokens');
 const { flagSybilAccounts } = require('../scripts/flag-sybil-accounts');
+const Invite = require('../src/models/Invite');
 
 let server;
 let baseUrl;
 let ipCounter = 1;
-const verificationCodes = new Map();
-const originalSendVerificationCode = mailer.sendVerificationCode;
 
-const MODELS = [User, Film, Rating, Review, Comment, Event, Action, Session];
+const MODELS = [User, Film, Rating, Review, Comment, Event, Action, Session, Invite];
 
 function nextIp() {
   ipCounter += 1;
@@ -72,7 +71,17 @@ function refreshCookieOf(response) {
 
 async function clean() {
   await Promise.all(MODELS.map(Model => Model.deleteMany({})));
-  verificationCodes.clear();
+}
+
+// Инвайт создаём прямо в базе: админский API покрыт отдельным файлом тестов.
+async function createInvite(overrides = {}) {
+  const code = generateInviteCode();
+  await Invite.create({
+    codeHash: hashToken(code.replace('-', '')),
+    codePrefix: code.slice(0, 4),
+    ...overrides
+  });
+  return code;
 }
 
 let userSeq = 0;
@@ -82,7 +91,6 @@ async function createUser(overrides = {}) {
     email: `user${userSeq}@example.com`,
     password: await bcrypt.hash('password123', 4),
     nickname: `user${userSeq}`,
-    emailVerified: true,
     ...overrides
   });
 }
@@ -111,64 +119,99 @@ before(async () => {
   server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
-  // Перехватываем письма, чтобы тесты знали код подтверждения.
-  mailer.sendVerificationCode = async (email, code) => {
-    verificationCodes.set(email, code);
-    return { ok: true };
-  };
 });
 
 beforeEach(clean);
 
 after(async () => {
-  mailer.sendVerificationCode = originalSendVerificationCode;
   await new Promise(resolve => server.close(resolve));
   await mongoose.disconnect();
 });
 
 // ─────────────────────────── AUTH ───────────────────────────
 
-test('регистрация: 201, код на почту, вход запрещён до подтверждения', async () => {
+test('регистрация по инвайту: сразу токен, повторный код не срабатывает', async () => {
+  await createUser(); // база не пустая — бутстрап-режим выключен
+  const code = await createInvite();
+
   const registered = await call('/api/auth/register', {
     method: 'POST',
     body: {
-      email: 'new@example.com', password: 'password123', nickname: 'Новичок',
+      nickname: 'Новичок',
+      password: 'password123',
+      inviteCode: code.toLowerCase(),
       consent: { personalData: true, cookies: true }
     }
   });
   assert.equal(registered.status, 201);
-  assert.equal(registered.json.user.emailVerified, false);
-  assert.equal(registered.json.accessToken, undefined);
-  assert.ok(verificationCodes.get('new@example.com'), 'код не был отправлен');
+  assert.ok(registered.json.accessToken, 'аккаунт должен входить сразу, без подтверждений');
+  assert.ok(refreshCookieOf(registered), 'refresh-cookie не выставлена');
 
-  const blocked = await call('/api/auth/login', {
-    method: 'POST',
-    body: { email: 'new@example.com', password: 'password123' }
-  });
-  assert.equal(blocked.status, 403);
-  assert.equal(blocked.json.error.code, 'EMAIL_NOT_VERIFIED');
+  const invite = await Invite.findOne({ codePrefix: code.slice(0, 4) });
+  assert.ok(invite.usedAt, 'инвайт не помечен использованным');
+  assert.equal(invite.usedBy.toString(), registered.json.user.id);
 
-  const wrong = await call('/api/auth/verify-email', {
+  const reuse = await call('/api/auth/register', {
     method: 'POST',
-    body: { email: 'new@example.com', code: '000000' }
+    body: {
+      nickname: 'Второй',
+      password: 'password123',
+      inviteCode: code,
+      consent: { personalData: true, cookies: true }
+    }
   });
-  assert.equal(wrong.status, 400);
+  assert.equal(reuse.status, 409);
+  assert.equal(reuse.json.error.code, 'INVITE_USED');
+});
 
-  const verified = await call('/api/auth/verify-email', {
+test('без инвайта регистрация закрыта, код нужен реальный', async () => {
+  await createUser();
+
+  const noCode = await call('/api/auth/register', {
     method: 'POST',
-    body: { email: 'new@example.com', code: verificationCodes.get('new@example.com') }
+    body: {
+      nickname: 'Без кода',
+      password: 'password123',
+      consent: { personalData: true, cookies: true }
+    }
   });
-  assert.equal(verified.status, 200);
-  assert.ok(verified.json.accessToken);
-  assert.ok(refreshCookieOf(verified), 'refresh-cookie не выставлена');
+  assert.equal(noCode.status, 403);
+  assert.equal(noCode.json.error.code, 'INVITE_REQUIRED');
+
+  const fakeCode = await call('/api/auth/register', {
+    method: 'POST',
+    body: {
+      nickname: 'С фейком',
+      password: 'password123',
+      inviteCode: 'AAAA-BBBB',
+      consent: { personalData: true, cookies: true }
+    }
+  });
+  assert.equal(fakeCode.status, 400);
+  assert.equal(fakeCode.json.error.code, 'INVITE_INVALID');
+
+  assert.equal(await User.countDocuments({}), 1, 'неудачные попытки не должны создавать аккаунты');
+});
+
+test('первый пользователь пустой базы становится админом без инвайта', async () => {
+  const first = await call('/api/auth/register', {
+    method: 'POST',
+    body: {
+      nickname: 'Основатель',
+      password: 'password123',
+      consent: { personalData: true, cookies: true }
+    }
+  });
+  assert.equal(first.status, 201);
+  assert.equal(first.json.user.isAdmin, true);
 });
 
 test('логин, /me, ротация refresh и выход', async () => {
-  await createUser({ email: 'login@example.com' });
+  const user = await createUser({ email: 'login@example.com' });
 
   const login = await call('/api/auth/login', {
     method: 'POST',
-    body: { email: 'login@example.com', password: 'password123' }
+    body: { nickname: user.nickname, password: 'password123' }
   });
   assert.equal(login.status, 200);
   const accessToken = login.json.accessToken;
@@ -195,17 +238,22 @@ test('логин, /me, ротация refresh и выход', async () => {
   assert.equal(afterLogout.status, 401);
 });
 
-test('неподтверждённый пользователь не может ставить оценку', async () => {
-  const user = await createUser({ emailVerified: false });
+test('неверный пароль не пускает, пользователь без почты оценивает фильмы', async () => {
+  const user = await createUser({ email: undefined });
   const film = await Film.create({ tmdbId: 900, title: 'Фильм' });
 
-  const response = await call('/api/ratings', {
+  const wrong = await call('/api/auth/login', {
+    method: 'POST',
+    body: { nickname: user.nickname, password: 'wrong-password' }
+  });
+  assert.equal(wrong.status, 401);
+
+  const rated = await call('/api/ratings', {
     method: 'POST',
     token: signAccessToken(user._id),
     body: { filmId: String(film._id), scores: scores(), vibe: 5 }
   });
-  assert.equal(response.status, 403);
-  assert.equal(response.json.error.code, 'EMAIL_NOT_VERIFIED');
+  assert.equal(rated.status, 201, 'аккаунт без почты должен иметь полный доступ');
 });
 
 // ─────────────────────────── FILMS ───────────────────────────
@@ -489,23 +537,21 @@ test('алиас /api/poster/:size/* валидирует размер', async (
 });
 
 test('сквозной сценарий фронтенда: регистрация → оценка → рецензия → модерация', async () => {
-  const email = 'journey@example.com';
+  await createUser();
+  const inviteCode = await createInvite();
+
   const registered = await call('/api/auth/register', {
     method: 'POST',
     body: {
-      email, password: 'password123', nickname: 'Путешественник',
+      nickname: 'Путешественник', password: 'password123', inviteCode,
       consent: { personalData: true, cookies: true }
     }
   });
   assert.equal(registered.status, 201);
 
-  const verified = await call('/api/auth/verify-email', {
-    method: 'POST',
-    body: { email, code: verificationCodes.get(email) }
-  });
-  assert.equal(verified.status, 200);
-  const token = verified.json.accessToken;
-  const cookie = refreshCookieOf(verified);
+  const token = registered.json.accessToken;
+  const cookie = refreshCookieOf(registered);
+  assert.ok(token);
 
   const me = await call('/api/auth/me', { token });
   assert.equal(me.status, 200);
@@ -622,31 +668,34 @@ test('сквозной сценарий фронтенда: регистраци
 test('регистрация без согласий не создаёт пользователя', async () => {
   const response = await call('/api/auth/register', {
     method: 'POST',
-    body: { email: 'no-consent@example.com', password: 'password123', nickname: 'NoConsent' }
+    body: { password: 'password123', nickname: 'NoConsent' }
   });
 
   assert.equal(response.status, 400);
   assert.equal(response.json.error.code, 'VALIDATION_ERROR');
   assert.equal(
-    await User.countDocuments({ email: 'no-consent@example.com' }),
+    await User.countDocuments({ nickname: 'NoConsent' }),
     0,
     'пользователь создан без согласий'
   );
 });
 
 test('согласия сохраняются вместе с аккаунтом', async () => {
+  await createUser();
+  const inviteCode = await createInvite();
+
   const response = await call('/api/auth/register', {
     method: 'POST',
     body: {
-      email: 'consent@example.com',
-      password: 'password123',
       nickname: 'Consent',
+      password: 'password123',
+      inviteCode,
       consent: { personalData: true, cookies: true, version: '1.0' }
     }
   });
   assert.equal(response.status, 201);
 
-  const user = await User.findOne({ email: 'consent@example.com' });
+  const user = await User.findOne({ nickname: 'Consent' });
   assert.ok(user, 'пользователь не создан');
   assert.equal(user.consent.personalData, true);
   assert.equal(user.consent.cookies, true);
@@ -656,17 +705,20 @@ test('согласия сохраняются вместе с аккаунтом
 });
 
 test('с одного IP нельзя зарегистрировать больше 10 аккаунтов в час', async () => {
+  await createUser();
+
   const headers = { 'x-forwarded-for': '198.51.100.77' };
   let last;
 
   for (let i = 0; i < 11; i += 1) {
+    const inviteCode = await createInvite();
     last = await call('/api/auth/register', {
       method: 'POST',
       headers,
       body: {
-        email: `farm${i}@example.com`,
         password: 'password123',
         nickname: `farm${i}`,
+        inviteCode,
         consent: { personalData: true, cookies: true }
       }
     });
@@ -684,7 +736,6 @@ test('накрутка оценками возможна, но обнуляет�
       email: `sybil${i}@example.com`,
       password: 'x',
       nickname: `sybil${i}`,
-      emailVerified: true,
       registeredIp: farmIp
     });
     await Rating.create({

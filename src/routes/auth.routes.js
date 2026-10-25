@@ -2,34 +2,31 @@ const express  = require('express');
 const bcrypt   = require('bcryptjs');
 const { body } = require('express-validator');
 const User     = require('../models/User');
+const Invite   = require('../models/Invite');
 const Session  = require('../models/Session');
 const { authLimiter, registerLimiter } = require('../middleware/security');
 const { authenticate } = require('../middleware/auth');
 const {
   EXCLUSIVE_NICKNAME,
-  EMAIL_CODE_TTL_MIN,
-  EMAIL_RESEND_COOLDOWN_SEC,
-  EMAIL_RESEND_MAX_PER_HOUR,
-  JWT_REFRESH_TTL_DAYS
+  JWT_REFRESH_TTL_DAYS,
+  REGISTRATION_MODE
 } = require('../config/env');
 const asyncHandler = require('../utils/asyncHandler');
 const { UnauthorizedError, ConflictError, ValidationError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
-const { generateNumericCode, generateResetToken, hashToken } = require('../utils/tokens');
+const { hashToken, normalizeInviteCode } = require('../utils/tokens');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { setRefreshCookie, clearRefreshCookie } = require('../utils/cookies');
-const mailer = require('../services/mailer');
 
 const router = express.Router();
-
-const verificationMessage = 'Проверьте почту для подтверждения';
 
 function publicUser(user) {
   return {
     id: user._id,
-    email: user.email,
     nickname: user.nickname,
-    emailVerified: user.emailVerified
+    email: user.email || null,
+    isAdmin: Boolean(user.isAdmin),
+    totalPoints: user.totalPoints || 0
   };
 }
 
@@ -48,48 +45,58 @@ async function issueTokens(user, req, res) {
   return signAccessToken(user._id);
 }
 
-function dispatchEmail(send) {
-  try {
-    Promise.resolve(send()).catch(() => {});
-  } catch {}
+function inviteIsExpired(invite, now = new Date()) {
+  return Boolean(invite.expiresAt && invite.expiresAt <= now);
 }
 
-function checkResendLimit(user, now) {
-  const verification = user.emailVerification;
-  const cooldownMs = EMAIL_RESEND_COOLDOWN_SEC * 1000;
-  if (verification?.sentAt) {
-    const retryAfter = Math.ceil((verification.sentAt.getTime() + cooldownMs - now.getTime()) / 1000);
-    if (retryAfter > 0) {
-      throw new AppError('RESEND_COOLDOWN', 'Повторная отправка пока недоступна', 429, { retryAfter });
-    }
+// Проверяем код до создания аккаунта, чтобы не мусорить в базе.
+async function findUsableInvite(rawCode) {
+  const normalized = normalizeInviteCode(rawCode);
+  if (!/^[A-Z0-9]{8}$/.test(normalized)) {
+    throw new AppError('INVITE_INVALID', 'Инвайт-код недействителен', 400);
   }
 
-  const recentSends = (verification?.resendHistory || [])
-    .filter(sentAt => now.getTime() - new Date(sentAt).getTime() < 60 * 60 * 1000);
-  if (recentSends.length >= EMAIL_RESEND_MAX_PER_HOUR) {
-    throw new AppError('RESEND_LIMIT', 'Превышен лимит отправки кодов', 429);
-  }
+  const invite = await Invite.findOne({ codeHash: hashToken(normalized) });
+  if (!invite) throw new AppError('INVITE_INVALID', 'Инвайт-код недействителен', 400);
+  if (invite.revokedAt) throw new AppError('INVITE_REVOKED', 'Инвайт-код отозван', 410);
+  if (invite.usedAt) throw new AppError('INVITE_USED', 'Инвайт-код уже использован', 409);
+  if (inviteIsExpired(invite)) throw new AppError('INVITE_EXPIRED', 'Срок действия инвайт-кода истёк', 410);
+  return invite;
 }
 
-function updateVerification(user, now) {
-  const previousHistory = (user.emailVerification?.resendHistory || [])
-    .filter(sentAt => now.getTime() - new Date(sentAt).getTime() < 60 * 60 * 1000);
-  const code = generateNumericCode();
-  user.emailVerification = {
-    codeHash: hashToken(code),
-    expiresAt: new Date(now.getTime() + EMAIL_CODE_TTL_MIN * 60 * 1000),
-    sentAt: now,
-    attempts: 0,
-    resendHistory: [...previousHistory, now]
-  };
-  dispatchEmail(() => mailer.sendVerificationCode(user.email, code));
+// Бросаем регистрацию, если параллельный запрос успел занять тот же код:
+// код должен достаться ровно одному аккаунту.
+async function claimInvite(invite, userId) {
+  const now = new Date();
+  const claimed = await Invite.findOneAndUpdate(
+    {
+      _id: invite._id,
+      usedAt: null,
+      revokedAt: null,
+      $or: [{ expiresAt: null }, { expiresAt: { $gt: now } }]
+    },
+    { $set: { usedBy: userId, usedAt: now } },
+    { returnDocument: 'after' }
+  );
+  if (!claimed) throw new AppError('INVITE_USED', 'Инвайт-код уже использован', 409);
+  return claimed;
 }
+
+// GET /api/auth/config — что показать в форме входа/регистрации.
+router.get('/config', (req, res) => {
+  res.json({
+    registrationMode: REGISTRATION_MODE,
+    inviteRequired: REGISTRATION_MODE === 'invite',
+    passwordResetRequiresAdmin: true
+  });
+});
 
 // POST /api/auth/register
+// Аккаунт создаётся сразу: почта не нужна и не подтверждается.
 router.post('/register', registerLimiter, authLimiter, [
-  body('email').isEmail().normalizeEmail(),
+  body('nickname').trim().isLength({ min: 2, max: 50 }).withMessage('Никнейм должен быть от 2 до 50 символов'),
   body('password').isLength({ min: 8 }).withMessage('Пароль должен быть минимум 8 символов'),
-  body('nickname').notEmpty().isLength({ max: 50 }).withMessage('Никнейм не длиннее 50 символов')
+  body('inviteCode').optional({ nullable: true }).isString().trim()
 ], asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
@@ -99,33 +106,32 @@ router.post('/register', registerLimiter, authLimiter, [
     throw new ValidationError('Нужно согласие на обработку персональных данных и использование cookie');
   }
 
-  const { email, password, nickname } = req.body;
-  const existingEmail = await User.findOne({ email });
-  if (existingEmail) {
-    if (existingEmail.emailVerified) throw new ConflictError('Пользователь уже существует');
-
-    const now = new Date();
-    const sentAt = existingEmail.emailVerification?.sentAt;
-    const retryAfter = sentAt
-      ? Math.ceil((sentAt.getTime() + EMAIL_RESEND_COOLDOWN_SEC * 1000 - now.getTime()) / 1000)
-      : 0;
-    if (retryAfter <= 0) {
-      checkResendLimit(existingEmail, now);
-      updateVerification(existingEmail, now);
-      await existingEmail.save();
-    }
-    return res.status(200).json({ user: publicUser(existingEmail), message: verificationMessage });
-  }
+  const { nickname, password, inviteCode } = req.body;
 
   const existingNickname = await User.findOne({ nickname });
-  if (existingNickname) throw new ConflictError('Пользователь уже существует');
+  if (existingNickname) throw new ConflictError('Этот никнейм уже занят');
+
+  // Первый аккаунт на пустой базе создаём без инвайта и сразу админом:
+  // иначе на свежей установке некому выдать первый код.
+  const userCount = await User.estimatedDocumentCount();
+  const isBootstrap = userCount === 0;
+
+  let invite = null;
+  if (!isBootstrap) {
+    const hasInvite = typeof inviteCode === 'string' && normalizeInviteCode(inviteCode).length > 0;
+    if (hasInvite) {
+      invite = await findUsableInvite(inviteCode);
+    } else if (REGISTRATION_MODE === 'invite') {
+      throw new AppError('INVITE_REQUIRED', 'Для регистрации нужен инвайт-код', 403);
+    }
+  }
 
   const hashedPassword = await bcrypt.hash(password, 10);
   const user = new User({
-    email,
-    password: hashedPassword,
     nickname,
-    emailVerified: false,
+    password: hashedPassword,
+    isAdmin: isBootstrap,
+    invitedBy: invite?.createdBy || null,
     registeredIp: req.ip,
     consent: {
       personalData: true,
@@ -135,86 +141,51 @@ router.post('/register', registerLimiter, authLimiter, [
       ip: req.ip
     }
   });
-  updateVerification(user, new Date());
-  await user.save();
 
-  return res.status(201).json({ user: publicUser(user), message: verificationMessage });
-}));
-
-// POST /api/auth/verify-email
-router.post('/verify-email', authLimiter, [
-  body('email').isEmail().normalizeEmail(),
-  body('code').matches(/^\d{6}$/).withMessage('Код должен состоять из 6 цифр')
-], asyncHandler(async (req, res, next) => {
-  if (checkValidation(req, next)) return;
-
-  const user = await User.findOne({ email: req.body.email });
-  if (!user) throw new AppError('INVALID_CODE', 'Неверный код подтверждения', 400);
-  if (user.emailVerified) return res.json({ message: 'Email уже подтверждён' });
-
-  const verification = user.emailVerification;
-  const now = new Date();
-  if (!verification || !verification.expiresAt || verification.expiresAt < now) {
-    throw new AppError('CODE_EXPIRED', 'Код подтверждения истёк', 400);
-  }
-  if (verification.attempts >= 5) {
-    throw new AppError('TOO_MANY_ATTEMPTS', 'Слишком много неверных попыток', 429);
-  }
-  if (hashToken(req.body.code) !== verification.codeHash) {
-    verification.attempts += 1;
+  try {
     await user.save();
-    throw new AppError('INVALID_CODE', 'Неверный код подтверждения', 400);
+    if (invite) await claimInvite(invite, user._id);
+  } catch (error) {
+    // Не оставляем «полузарегистрированный» аккаунт, если код не закрепился.
+    await User.deleteOne({ _id: user._id }).catch(() => {});
+    throw error;
   }
 
-  user.emailVerified = true;
-  user.emailVerification = null;
-  await user.save();
   const accessToken = await issueTokens(user, req, res);
-  return res.json({ accessToken, user: publicUser(user) });
+  return res.status(201).json({
+    accessToken,
+    user: publicUser(user),
+    message: isBootstrap ? 'Аккаунт администратора создан' : 'Аккаунт создан'
+  });
 }));
 
-// POST /api/auth/resend-verification
-router.post('/resend-verification', authLimiter, [
-  body('email').isEmail().normalizeEmail()
+// POST /api/auth/login — вход по никнейму и паролю.
+router.post('/login', authLimiter, [
+  body('nickname').optional({ nullable: true }).isString().trim(),
+  body('email').optional({ nullable: true }).isString().trim(),
+  body('password').notEmpty()
 ], asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
-  const user = await User.findOne({ email: req.body.email });
-  if (!user) return res.json({ message: verificationMessage });
-  if (user.emailVerified) throw new AppError('ALREADY_VERIFIED', 'Email уже подтверждён', 400);
+  const identifier = String(req.body.nickname || req.body.email || '').trim();
+  const { password } = req.body;
+  if (!identifier) throw new ValidationError('Укажите никнейм');
 
-  const now = new Date();
-  checkResendLimit(user, now);
-  updateVerification(user, now);
-  await user.save();
-  return res.json({ message: verificationMessage });
+  // email оставлен только для старых аккаунтов, где он был логином.
+  const user = await User.findOne(
+    identifier.includes('@') ? { email: identifier.toLowerCase() } : { nickname: identifier }
+  );
+  if (!user) throw new UnauthorizedError('Неверный никнейм или пароль');
+
+  const isValid = await bcrypt.compare(password, user.password);
+  if (!isValid) throw new UnauthorizedError('Неверный никнейм или пароль');
+
+  const accessToken = await issueTokens(user, req, res);
+  res.json({ accessToken, user: publicUser(user) });
 }));
 
-// POST /api/auth/forgot-password
-router.post('/forgot-password', authLimiter, [
-  body('email').isEmail().normalizeEmail()
-], asyncHandler(async (req, res, next) => {
-  if (checkValidation(req, next)) return;
-
-  const user = await User.findOne({ email: req.body.email });
-  if (user) {
-    const resetToken = generateResetToken();
-    const now = new Date();
-    user.passwordReset = {
-      tokenHash: hashToken(resetToken),
-      expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
-      sentAt: now,
-      usedAt: null
-    };
-    await user.save();
-    const clientUrl = (process.env.CLIENT_URL || 'http://localhost:5173').replace(/\/$/, '');
-    const resetUrl = `${clientUrl}/reset-password?token=${encodeURIComponent(resetToken)}`;
-    dispatchEmail(() => mailer.sendPasswordReset(user.email, resetUrl));
-  }
-  return res.json({ message: 'Если email существует, письмо отправлено' });
-}));
-
-// POST /api/auth/reset-password
+// POST /api/auth/reset-password — ссылку выдаёт администратор вручную,
+// письмо никуда не отправляется.
 router.post('/reset-password', authLimiter, [
   body('token').isString().notEmpty(),
   body('newPassword').isLength({ min: 8 }).withMessage('Пароль должен быть минимум 8 символов')
@@ -233,38 +204,6 @@ router.post('/reset-password', authLimiter, [
   await user.save();
   await Session.deleteMany({ userId: user._id });
   return res.json({ message: 'Пароль изменён' });
-}));
-
-// POST /api/auth/login
-router.post('/login', authLimiter, [
-  body('email').isEmail().normalizeEmail(),
-  body('password').notEmpty()
-], asyncHandler(async (req, res, next) => {
-  if (checkValidation(req, next)) return;
-
-  try {
-    const { email, password } = req.body;
-
-    const user = await User.findOne({ email });
-    if (!user) throw new UnauthorizedError('Неверный email или пароль');
-    if (!user.emailVerified) {
-      throw new AppError('EMAIL_NOT_VERIFIED', 'Подтвердите email', 403);
-    }
-
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) throw new UnauthorizedError('Неверный email или пароль');
-
-    const accessToken = await issueTokens(user, req, res);
-    res.json({
-      accessToken,
-      user: {
-        id: user._id, email: user.email, nickname: user.nickname,
-        isAdmin: user.isAdmin, totalPoints: user.totalPoints
-      }
-    });
-  } catch (error) {
-    throw error;
-  }
 }));
 
 // POST /api/auth/refresh
@@ -327,7 +266,7 @@ router.post('/logout-all', authenticate, asyncHandler(async (req, res) => {
 }));
 
 // GET /api/auth/me
-router.get('/me', authenticate, asyncHandler(async (req, res, next) => {
+router.get('/me', authenticate, asyncHandler(async (req, res) => {
   const user = await User.findById(req.userId).select('-password');
   const isExclusive = user.nickname === EXCLUSIVE_NICKNAME;
   res.json({ ...user.toObject(), isExclusive });

@@ -1,18 +1,12 @@
 const mongoose = require('mongoose');
 
-const emailVerificationSchema = new mongoose.Schema({
-  codeHash: String,
-  expiresAt: Date,
-  sentAt: Date,
-  attempts: { type: Number, default: 0 },
-  resendHistory: { type: [Date], default: [] }
-}, { _id: false });
-
 const passwordResetSchema = new mongoose.Schema({
   tokenHash: String,
   expiresAt: Date,
   sentAt: Date,
-  usedAt: Date
+  usedAt: Date,
+  // Кто из администраторов выдал ссылку — для аудита.
+  issuedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { _id: false });
 
 const countersSchema = new mongoose.Schema({
@@ -38,19 +32,24 @@ const consentSchema = new mongoose.Schema({
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
+  // Вход идёт по никнейму: почта больше не нужна и не подтверждается.
+  // Поле оставлено необязательным для старых аккаунтов и для связи с админом.
   email: {
     type: String,
     unique: true,
-    required: true,
+    sparse: true,
+    trim: true,
+    lowercase: true,
     maxlength: 100,
+    default: undefined,
     match: [/^\S+@\S+\.\S+$/, 'Некорректный email']
   },
   password:       { type: String, required: true },
   nickname:       { type: String, unique: true, required: true, maxlength: 50 },
   avatar:         { type: String, default: '' },
   isAdmin:        { type: Boolean, default: false },
-  emailVerified:  { type: Boolean, default: false },
-  emailVerification: { type: emailVerificationSchema, default: null },
+  // Какой инвайт открыл аккаунт — нужно, чтобы отслеживать фермы и отзывать доступ.
+  invitedBy:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   passwordReset:  { type: passwordResetSchema, default: null },
   totalPoints:    { type: Number, default: 0 },
   counters:       { type: countersSchema, default: () => ({}) },

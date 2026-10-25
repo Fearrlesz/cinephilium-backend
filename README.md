@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 3.0. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 4.0. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -15,9 +15,9 @@ API кино-каталога: фильмы из TMDB, оценки по 15 кр
 | HTTP | Express 5 |
 | БД | MongoDB + Mongoose 9 |
 | Авторизация | JWT (access 15 мин + refresh 30 дней в HttpOnly cookie), bcrypt |
+| Регистрация | никнейм + пароль по инвайт-коду, без почты и SMTP |
 | Валидация | express-validator + ручные проверки в роутах |
 | Безопасность | helmet, express-rate-limit, NoSQL-санитайзер, CORS по списку |
-| Почта | nodemailer (SMTP) |
 
 Локально нужен запущенный MongoDB (`mongodb://127.0.0.1:27017`).
 
@@ -66,10 +66,9 @@ npm start                 # http://localhost:3000/api/health
 | `COOKIE_DOMAIN` | не задан | host-only cookie; задавать только при необходимости |
 | `COOKIE_SECURE` | `NODE_ENV === 'production'` | в проде обязательно `true` (HTTPS) |
 | `IMAGE_PROXY_BASE_URL` | — | если задан, постеры идут через `/api/tmdb-image` |
-| `SMTP_HOST/PORT/SECURE/USER/PASS/FROM` | — | без них письма не уходят |
-| `EMAIL_CODE_TTL_MIN` | 10 | срок жизни кода подтверждения |
-| `EMAIL_RESEND_COOLDOWN_SEC` | 60 | пауза между отправками |
-| `EMAIL_RESEND_MAX_PER_HOUR` | 3 | лимит отправок в час |
+| `REGISTRATION_MODE` | `invite` | `invite` — только по коду от админа, `open` — свободная регистрация |
+| `INVITE_TTL_DAYS` | `0` | срок жизни выданного инвайта в днях; 0 — бессрочно |
+| `PASSWORD_RESET_TTL_MIN` | `30` | сколько живёт ссылка сброса пароля от админа |
 
 ---
 
@@ -80,10 +79,9 @@ src/server.js          точка входа: env → Mongo → listen
 src/app.js             сборка Express: cors → helmet → limiter → json → cookie → sanitizer → роуты → 404 → ошибки
 src/config/            env.js (конфиг), cors.js, scoring.js (формулы)
 src/middleware/        auth.js, security.js, errorHandler.js, validate.js
-src/models/            User, Film, Rating, Review, Comment, Event, Action, Session
+src/models/            User, Invite, Film, Rating, Review, Comment, Event, Action, Session
 src/routes/            по одному файлу на домен
-src/services/mailer.js SMTP-письма
-src/utils/             jwt, cookies, counters, poster, errors, achievements, validate, asyncHandler
+src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, asyncHandler
 api/tmdb-image.js      прокси постеров (Vercel + Express)
 scripts/               миграции и обслуживание данных
 tests/                 node:test, у каждого файла своя БД
@@ -108,8 +106,7 @@ tests/                 node:test, у каждого файла своя БД
 ### Поток запроса на примере оценки
 
 1. `POST /api/ratings` → `writeLimiter` (30/мин) → `ratingLimiter` (40/час) →
-   `authenticate` (достаёт Bearer, проверяет подпись и `type: 'access'`, грузит пользователя) →
-   `requireVerified` (403, если email не подтверждён).
+   `authenticate` (достаёт Bearer, проверяет подпись и `type: 'access'`, грузит пользователя).
 2. Роут валидирует `filmId`, все 15 оценок (1..10), `vibe` (1..10), веса блоков (сумма строго 100)
    и длину `textReview` (<= 2000).
 3. Считается `technicalScore` и `combinedScore` (см. §5).
@@ -168,23 +165,24 @@ Refresh — это **ротация**: при обновлении старый 
 cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 `COOKIE_DOMAIN` по умолчанию не задан — host-only cookie работает и локально, и в проде.
 
-### Подтверждение email
+### Регистрация по инвайту
 
-`register` → код (6 цифр, в БД только SHA-256, TTL 10 мин, 5 попыток) → `verify-email`.
-Повторная отправка: cooldown 60 с, не больше 3 в час. До подтверждения логин отвечает
-403 `EMAIL_NOT_VERIFIED`, а запись (оценки, рецензии, комментарии) — 403 через `requireVerified`.
+Почта не запрашивается: `register` принимает `nickname`, `password`, `inviteCode` и `consent`,
+сразу создаёт аккаунт и выдаёт `accessToken` + refresh-cookie. Код одноразовый: в базе лежит
+только его SHA-256, а сам код показывается один раз в ответе на создание. В списке инвайтов
+виден только префикс, статус и срок. Код можно отозвать, использованный повторно не срабатывает
+(`INVITE_USED`), просроченный — `INVITE_EXPIRED`. Без кода в режиме `invite` — 403
+`INVITE_REQUIRED`, мусорный код — 400 `INVITE_INVALID`.
+
+Первый пользователь пустой базы создаётся без кода и сразу становится админом: иначе на свежей
+установке некому выдать первый инвайт. `GET /api/auth/config` сообщает фронту, нужен ли код.
 
 ### Сброс пароля
 
-`forgot-password` → случайный 32-байтный токен, в БД только SHA-256, TTL 30 минут,
-письмо со ссылкой `${CLIENT_URL}/reset-password?token=…`. Ответ всегда одинаковый,
-существует email или нет. `reset-password` проверяет срок и одноразовость, меняет пароль
-и **удаляет все сессии** пользователя.
-
-**Когда письмо реально приходит:** только если настроены `SMTP_HOST`, `SMTP_USER`,
-`SMTP_PASS`, `SMTP_FROM`. В dev без SMTP ссылка печатается в консоль
-(`[DEV] password reset link …`), в production без SMTP будет ошибка `EMAIL_SEND_FAILED`
-в логах и пользователь письма не получит.
+Писем нет. Админ генерирует одноразовую ссылку (`POST /api/admin/users/:id/reset-link`),
+в БД попадает только SHA-256 токена, TTL — `PASSWORD_RESET_TTL_MIN` (30 минут). Админ передаёт
+ссылку вручную; `reset-password` проверяет срок и одноразовость, меняет пароль и **удаляет все
+сессии** пользователя. Потерянную ссылку админ просто выдаёт заново.
 
 ---
 
@@ -192,7 +190,8 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | email*, password (bcrypt), nickname*, avatar, isAdmin, emailVerified, emailVerification, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `email` unique, `nickname` unique, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
 | `reviews` | userId, filmId, ratingId, title, text (450..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
@@ -210,7 +209,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Слой | Механика |
 |---|---|
-| Регистрация | 10 аккаунтов/час с одного IP (считаются и успешные), обязательное подтверждение email |
+| Регистрация | 10 аккаунтов/час с одного IP (считаются и успешные) + одноразовый инвайт-код на аккаунт |
 | Оценки | 40/час с одного IP, одна оценка на пару user+film |
 | Вес голоса | `Rating.weight` (0..1) копируется из `User.trustWeight` |
 | Агрегаты | `$lookup` фильтрует `weight: { $ne: 0 }`, значит помеченные оценки не влияют на средние, топ фильмов и «votesCount» |
@@ -220,9 +219,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 Детектор запускается вручную (cron/руками), есть `--dry-run` и `--unflag`.
 Порог консервативный, чтобы не задеть семью или офис с общим IP.
 
-**Ограничение:** распределённая ферма (много IP + одноразовые почты) так не ловится.
-Следующие шаги при необходимости: CAPTCHA (Turnstile/hCaptcha) на регистрацию, блок-лист
-одноразовых доменов, правило «голоса аккаунтов младше 24 часов не входят в средние».
+**Ограничение:** распределённая ферма (много IP и много инвайтов) так не ловится.
+Следующие шаги при необходимости: CAPTCHA (Turnstile/hCaptcha) на регистрацию, выдача инвайтов
+только после активности, правило «голоса аккаунтов младше 24 часов не входят в средние».
 
 ---
 
@@ -234,15 +233,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| POST | `/api/auth/register` | — | создать аккаунт (нужны `consent`), отправить код |
-| POST | `/api/auth/verify-email` | — | подтвердить код, получить `accessToken` + cookie |
-| POST | `/api/auth/resend-verification` | — | повторно отправить код |
-| POST | `/api/auth/login` | — | вход (только для подтверждённых) |
+| GET | `/api/auth/config` | — | нужен ли инвайт-код для регистрации |
+| POST | `/api/auth/register` | — | создать аккаунт по инвайту (нужны `consent`), сразу `accessToken` + cookie |
+| POST | `/api/auth/login` | — | вход по никнейму (старые аккаунты — по почте) |
 | POST | `/api/auth/refresh` | cookie | ротация refresh, новый `accessToken` |
 | POST | `/api/auth/logout` | cookie | завершить текущую сессию |
 | POST | `/api/auth/logout-all` | access | завершить все сессии |
-| POST | `/api/auth/forgot-password` | — | письмо со ссылкой сброса |
-| POST | `/api/auth/reset-password` | — | сменить пароль по токену |
+| POST | `/api/auth/reset-password` | — | сменить пароль по ссылке от админа |
 | GET | `/api/auth/me` | access | текущий пользователь |
 
 ### Фильмы
@@ -261,15 +258,15 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| POST | `/api/ratings` | access + verified | поставить/обновить оценку |
+| POST | `/api/ratings` | access | поставить/обновить оценку |
 | GET | `/api/ratings/user` | access | свои оценки |
 | GET | `/api/ratings/:id/details` | — | детали оценки |
-| POST | `/api/reviews` | access + verified | рецензия (450..15000 символов) |
+| POST | `/api/reviews` | access | рецензия (450..15000 символов) |
 | GET | `/api/reviews/:filmId` | — | одобренные рецензии (админ видит все) |
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
 | POST | `/api/reviews/:id/like` | access | лайк, +5 автору |
-| POST | `/api/comments` | access + verified | комментарий или ответ |
+| POST | `/api/comments` | access | комментарий или ответ |
 | GET | `/api/comments/:filmId` | — | комментарии с ответами |
 | POST | `/api/comments/:id/like` | access | лайк, +1 автору |
 
@@ -284,6 +281,10 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | GET | `/api/top/users` | — (`{ items, pagination }`, без `flagged`) |
 | GET | `/api/events` | — (последние 50) |
 | POST | `/api/admin/make` | access + `secretKey` |
+| GET/POST | `/api/admin/invites` | admin — список (без кодов) и выдача новых |
+| DELETE | `/api/admin/invites/:id` | admin — отозвать неиспользованный код |
+| GET | `/api/admin/users?query=` | admin — поиск по никнейму |
+| POST | `/api/admin/users/:id/reset-link` | admin — одноразовая ссылка сброса |
 | GET | `/api/admin/pending/comments` / `reviews` | admin |
 | PUT | `/api/admin/comments/:id/approve` / `reject` | admin |
 | PUT | `/api/admin/reviews/:id/approve` / `reject` | admin |
@@ -298,20 +299,22 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test
 ```
 
-80 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-email` и т.д.),
+84 теста на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
 поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
 
 | Файл | Тестов |
 |---|---|
-| `tests/auth-email.test.js` | 10 |
+| `tests/auth-invite.test.js` | 12 |
 | `tests/auth-refresh.test.js` | 13 |
 | `tests/counters.test.js` | 15 |
 | `tests/errorHandler.test.js` | 7 |
 | `tests/poster.test.js` | 9 |
-| `tests/regression.test.js` | 26 |
+| `tests/regression.test.js` | 28 |
 
-`regression.test.js` включает сквозной сценарий «регистрация → подтверждение → оценка →
-рецензия → модерация» и проверки согласий и анти-накрутки.
+`auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
+вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
+`regression.test.js` включает сквозной сценарий «регистрация по инвайту → оценка → рецензия →
+модерация» и проверки согласий и анти-накрутки.
 
 В песочницах, где нельзя спавнить процессы, используйте
 `node --test-isolation=none --test tests/<file>.test.js`.
@@ -321,13 +324,16 @@ npm test
 ## 11. Миграции (пошагово, простыми словами)
 
 Ситуация: в базе уже есть пользователи и оценки, созданные старой версией. У них нет новых полей
-(`consent`, `emailVerified`, `counters`, `weight` и т.д.). Код это переживает, но есть два
-момента, которые **обязательно** надо исправить, иначе всё сломается:
+(`consent`, `counters`, `weight` и т.д.). Код это переживает, но есть три момента:
 
-1. **Старые пользователи не смогут войти.** Новый логин требует `emailVerified: true`, а у старых
-   записей поля нет. Скрипт `backfill-email-verified.js` проставляет его существующим аккаунтам.
+1. **Почта больше не нужна, но старые аккаунты не теряются.** Вход принимает никнейм, а если
+   человек помнит только почту — она тоже подходит. Подтверждение почты не требуется, отдельная
+   миграция пользователей не нужна: старые записи просто входят под своим ником.
 2. **Достижения и топ будут по нулям.** Они читают `counters`, которого у старых пользователей нет.
    `migrate-counters.js` пересчитывает счётчики по фактическим документам.
+3. **Новым пользователям нужен инвайт.** Если на проде ещё нет ни одного админа — либо выдай код
+   из терминала (`scripts/new-invite.js`), либо разреши бутстрап: на пустой базе первый
+   зарегистрировавшийся становится админом автоматически.
 
 Порядок действий (на сервере, где есть доступ к базе):
 
@@ -342,8 +348,8 @@ export JWT_ACCESS_SECRET=... JWT_REFRESH_SECRET=... TMDB_API_KEY=... ADMIN_SECRE
 # 2. Зависимости и тесты (быстрая проверка, что код рабочий)
 npm ci && npm test
 
-# 3. Старые аккаунты помечаем подтверждёнными (иначе не войдут)
-node scripts/backfill-email-verified.js
+# 3. Инвайт для первого нового пользователя (на пустой базе не нужен)
+node scripts/new-invite.js 1
 
 # 4. Счётчики: оценки, рецензии, комментарии, лайки
 node scripts/migrate-counters.js
@@ -383,15 +389,16 @@ node scripts/reconcile-counters.js
 2. Домен фронта должен совпадать с `CORS_ORIGIN` и `CLIENT_URL` на бэкенде, иначе
    CORS заблокирует запросы, а ссылка сброса пароля уйдёт не туда.
 
-**Почта:** без `SMTP_*` письма не отправляются. Подойдёт SMTP Яндекса, SendGrid, Resend,
-Mailgun — нужны host/port/user/pass и адрес отправителя в `SMTP_FROM`.
+**Регистрация:** почта и SMTP не используются. По умолчанию `REGISTRATION_MODE=invite` —
+после деплоя войди под админом и выдай коды (`POST /api/admin/invites` или
+`node scripts/new-invite.js`), ссылку сброса пароля также выдаёт админ.
 
 ---
 
 ## 13. Обслуживание
 
 ```bash
-node scripts/backfill-email-verified.js   # emailVerified старым аккаунтам
+node scripts/new-invite.js 5                # выдать 5 инвайт-кодов
 node scripts/migrate-counters.js          # первичный расчёт counters
 node scripts/reconcile-counters.js        # сверка counters с документами
 node scripts/migrate-posters.js           # poster -> posterPath
@@ -399,14 +406,14 @@ node scripts/backfill-anti-farm.js        # поля анти-накрутки +
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
 node scripts/flag-sybil-accounts.js --unflag    # снять пометки
-node scripts/send-test-email.js you@example.com # проверить SMTP из .env
+node scripts/check-secrets.js                   # проверка индекса git на секреты
 ```
 
 ---
 
 ## 14. Ограничения и планы
 
-- Распределённые фермы, одноразовые почты — вне возможностей IP-детектора.
+- Распределённые фермы с перепроданными инвайтами — вне возможностей IP-детектора.
 - Нет удаления оценок/рецензий → награды не откатываются.
 - `updateAchievements` молча логирует ошибку, если соединение с Mongo не готово.
 - Достижения пересчитываются только при действиях, а не по расписанию.
@@ -422,5 +429,6 @@ scripts/            миграции и обслуживание
 src/                приложение (см. §4)
 tests/              node:test
 .env.example        шаблон окружения
-CHANGELOG.md        что изменилось в 3.0 и почему
+.githooks/          pre-commit: не пускает секреты в git
+CHANGELOG.md        что изменилось в 4.0 и почему
 ```

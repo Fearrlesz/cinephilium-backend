@@ -84,8 +84,8 @@ const ratingId = new mongoose.Types.ObjectId();
 const contentId = new mongoose.Types.ObjectId();
 const author = { _id: authorId, nickname: 'Author', isAdmin: false };
 const film = { _id: filmId, title: 'Film', poster: '' };
-const regularUser = { _id: userId, nickname: 'User', isAdmin: false, emailVerified: true, counters: {} };
-const admin = { _id: userId, nickname: 'Admin', isAdmin: true, emailVerified: true, counters: {} };
+const regularUser = { _id: userId, nickname: 'User', isAdmin: false, counters: {} };
+const admin = { _id: userId, nickname: 'Admin', isAdmin: true, counters: {} };
 
 function counterUpdateOverrides(calls) {
   return [

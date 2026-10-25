@@ -1,3 +1,55 @@
+# Changelog — Cinephilium 4.0
+
+**Дата и время среза: 25.10.2026, 21:30 (Europe/Moscow, UTC+03:00)**
+
+## 4.0 — вход без почты
+
+Причина: SMTP требует денег и подтверждённого домена, а «подтверждение почтой» всё равно
+не мешало заводить аккаунты на выдуманные адреса. Почта убрана из аутентификации целиком.
+
+### Что удалено
+
+| Было | Стало |
+|---|---|
+| `POST /api/auth/verify-email`, `/resend-verification` | удалены — аккаунт активен сразу |
+| `POST /api/auth/forgot-password` | удалён — ссылку сброса выдаёт админ |
+| `src/services/mailer.js`, `nodemailer`, `scripts/send-test-email.js` | удалены |
+| `scripts/backfill-email-verified.js` | удалён — подтверждать нечего |
+| `User.emailVerified`, `User.emailVerification` | удалены |
+| `requireVerified` в `/ratings`, `/reviews`, `/comments` | удалён |
+| `SMTP_*`, `EMAIL_*` в `.env.example` | заменены на `REGISTRATION_MODE`, `INVITE_TTL_DAYS`, `PASSWORD_RESET_TTL_MIN` |
+
+### Что появилось
+
+- `POST /api/auth/register` принимает `nickname`, `password`, `inviteCode`, `consent` и сразу
+  возвращает `accessToken` + refresh-cookie. Ответ `201`, никакого промежуточного экрана.
+- `GET /api/auth/config` → `{ registrationMode, inviteRequired }`, чтобы фронт знал, нужен ли код.
+- Модель `Invite`: `codeHash` (SHA-256), `codePrefix`, `note`, `usedBy`, `revokedAt`, `expiresAt`.
+  Сам код показывается один раз при создании, в списке виден только префикс.
+- Админские роуты: `GET/POST /api/admin/invites`, `DELETE /api/admin/invites/:id`,
+  `GET /api/admin/users?query=`, `POST /api/admin/users/:id/reset-link`.
+- `POST /api/auth/login` принимает `nickname`; почта осталась запасным логином для старых аккаунтов.
+- Первый пользователь пустой базы создаётся без инвайта и сразу админом (бутстрап).
+- `node scripts/new-invite.js [N] [--note …] [--days …]` — выдача кодов без админки.
+
+### Защита секретов
+
+- `.gitignore`: `.env` + `.env.*` с исключением `.env.example`; добавлены `.tooling/`, `.cache/`,
+  `.npm-cache/`.
+- `.githooks/pre-commit` → `scripts/check-secrets.js`: блокирует коммит, если в индексе есть
+  env-файл или строка вида `mongodb+srv://user:pass@…`, приватный ключ, AWS/GitHub-токен.
+  Включается один раз: `npm run hooks:install`.
+- История обоих репозиториев проверена — `.env` в ней никогда не было.
+
+### Тесты
+
+- `tests/auth-email.test.js` заменён на `tests/auth-invite.test.js` (12 тестов): выдача и отзыв
+  кодов, отказ без инвайта, повторное использование, вход по никнейму, одноразовая ссылка сброса.
+- `tests/regression.test.js` переписан под инвайты (28 тестов), `errorHandler` — под никнейм.
+- Итого 84 теста, все зелёные.
+
+---
+
 # Changelog — Cinephilium 3.0
 
 **Дата и время среза: 25.10.2026, 14:23 (Europe/Moscow, UTC+03:00)**

@@ -35,29 +35,28 @@ test('unknown routes use the standard not-found error', async () => {
   });
 });
 
-test('registration validation reports the email field', async () => {
+test('registration validation reports the nickname field', async () => {
   const response = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: '', password: '', nickname: '' })
+    body: JSON.stringify({ nickname: '', password: '' })
   });
   const body = await response.json();
   assert.equal(response.status, 400);
   assert.equal(body.error.code, 'VALIDATION_ERROR');
-  assert.ok(body.error.details.some(detail => detail.field === 'email'));
+  assert.ok(body.error.details.some(detail => detail.field === 'nickname'));
 });
 
 test('duplicate registration returns conflict', async () => {
   const originalFindOne = User.findOne;
-  User.findOne = async () => ({ _id: 'existing-user', emailVerified: true });
+  User.findOne = async () => ({ _id: 'existing-user', nickname: 'Existing' });
   try {
     const response = await fetch(`${baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        email: 'existing@example.com',
-        password: 'password123',
         nickname: 'Existing',
+        password: 'password123',
         consent: { personalData: true, cookies: true }
       })
     });

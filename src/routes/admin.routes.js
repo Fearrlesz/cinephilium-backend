@@ -1,15 +1,19 @@
 const express = require('express');
 const { body } = require('express-validator');
+const mongoose = require('mongoose');
 const User    = require('../models/User');
+const Invite  = require('../models/Invite');
 const Comment = require('../models/Comment');
 const Review  = require('../models/Review');
 const { authenticate, isAdmin } = require('../middleware/auth');
 const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+const { generateInviteCode, hashToken, generateResetToken } = require('../utils/tokens');
+const { PASSWORD_RESET_TTL_MIN, INVITE_TTL_DAYS } = require('../config/env');
 
 const asyncHandler = require('../utils/asyncHandler');
-const { NotFoundError, ForbiddenError } = require('../utils/errors');
+const { NotFoundError, ForbiddenError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
@@ -166,6 +170,139 @@ router.put('/reviews/:id/reject', authenticate, isAdmin, asyncHandler(async (req
   } catch (error) {
     throw error;
   }
+}));
+
+// ─── ИНВАЙТЫ ─────────────────────────────────────────────
+// Почта не используется: доступ выдаётся одноразовым кодом вручную.
+
+function inviteStatus(invite, now) {
+  if (invite.revokedAt) return 'revoked';
+  if (invite.usedAt) return 'used';
+  if (invite.expiresAt && invite.expiresAt <= now) return 'expired';
+  return 'active';
+}
+
+// GET /api/admin/invites — список без самих кодов (в базе только хеши).
+router.get('/invites', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  const now = new Date();
+  const invites = await Invite.find({})
+    .sort({ createdAt: -1 })
+    .limit(200)
+    .populate('usedBy', 'nickname')
+    .lean();
+
+  res.json(invites.map(invite => ({
+    id: invite._id,
+    prefix: invite.codePrefix,
+    note: invite.note,
+    status: inviteStatus(invite, now),
+    usedBy: invite.usedBy?.nickname || null,
+    usedAt: invite.usedAt,
+    expiresAt: invite.expiresAt,
+    createdAt: invite.createdAt
+  })));
+}));
+
+// POST /api/admin/invites — выдать новые коды.
+// Сами коды возвращаются один раз: в базе хранится только SHA-256.
+router.post('/invites', authenticate, isAdmin, [
+  body('quantity').optional().isInt({ min: 1, max: 50 }).withMessage('Можно выдать от 1 до 50 кодов'),
+  body('note').optional({ nullable: true }).isLength({ max: 200 }).withMessage('Заметка не длиннее 200 символов'),
+  body('expiresInDays').optional({ nullable: true }).isInt({ min: 1, max: 365 })
+], asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const quantity = Number(req.body.quantity || 1);
+  const note = String(req.body.note || '').trim();
+  const days = Number(req.body.expiresInDays || INVITE_TTL_DAYS || 0);
+  const expiresAt = days > 0 ? new Date(Date.now() + days * 24 * 60 * 60 * 1000) : null;
+
+  const codes = [];
+  const docs = [];
+  for (let i = 0; i < quantity; i += 1) {
+    const code = generateInviteCode();
+    codes.push(code);
+    docs.push({
+      codeHash: hashToken(code.replace('-', '')),
+      codePrefix: code.slice(0, 4),
+      note,
+      createdBy: req.userId,
+      expiresAt
+    });
+  }
+
+  await Invite.insertMany(docs);
+  res.status(201).json({
+    invites: codes.map(code => ({ code, note, expiresAt })),
+    message: 'Коды показываются один раз — сохраните их сейчас'
+  });
+}));
+
+// DELETE /api/admin/invites/:id — отозвать ещё не использованный код.
+router.delete('/invites/:id', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Инвайт не найден');
+
+  const invite = await Invite.findById(req.params.id);
+  if (!invite) throw new NotFoundError('Инвайт не найден');
+  if (invite.usedAt) throw new AppError('INVITE_USED', 'Код уже использован — отозвать нельзя', 409);
+  if (invite.revokedAt) return res.json({ message: 'Код уже отозван' });
+
+  invite.revokedAt = new Date();
+  await invite.save();
+  res.json({ message: 'Код отозван' });
+}));
+
+// ─── ПОЛЬЗОВАТЕЛИ И СБРОС ПАРОЛЯ ─────────────────────────
+
+// GET /api/admin/users?query= — поиск по никнейму, чтобы найти кому выдать ссылку.
+router.get('/users', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  const query = String(req.query.query || '').trim();
+  const filter = query
+    ? { nickname: { $regex: query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' } }
+    : {};
+
+  const users = await User.find(filter)
+    .sort({ registeredAt: -1 })
+    .limit(20)
+    .select('nickname isAdmin email registeredAt flagged')
+    .lean();
+
+  res.json(users.map(user => ({
+    id: user._id,
+    nickname: user.nickname,
+    isAdmin: user.isAdmin,
+    hasEmail: Boolean(user.email),
+    flagged: Boolean(user.flagged),
+    registeredAt: user.registeredAt
+  })));
+}));
+
+// POST /api/admin/users/:id/reset-link — одноразовая ссылка сброса пароля.
+// Админ копирует её и передаёт пользователю любым способом: почта не участвует.
+router.post('/users/:id/reset-link', authenticate, isAdmin, asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw new NotFoundError('Пользователь не найден');
+
+  const user = await User.findById(req.params.id);
+  if (!user) throw new NotFoundError('Пользователь не найден');
+
+  const token = generateResetToken();
+  const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MIN * 60 * 1000);
+  user.passwordReset = {
+    tokenHash: hashToken(token),
+    expiresAt,
+    sentAt: new Date(),
+    usedAt: null,
+    issuedBy: req.userId
+  };
+  await user.save();
+
+  const clientUrl = (process.env.CLIENT_URL || process.env.CORS_ORIGIN || 'http://localhost:3000').replace(/\/$/, '');
+  res.json({
+    nickname: user.nickname,
+    url: `${clientUrl}/reset-password?token=${encodeURIComponent(token)}`,
+    expiresAt,
+    message: `Ссылка действует ${PASSWORD_RESET_TTL_MIN} минут и срабатывает один раз`
+  });
 }));
 
 module.exports = router;

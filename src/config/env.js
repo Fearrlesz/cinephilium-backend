@@ -40,15 +40,15 @@ const COOKIE_SECURE = process.env.COOKIE_SECURE === undefined
   ? process.env.NODE_ENV === 'production'
   : process.env.COOKIE_SECURE === 'true';
 const CORS_ORIGIN = process.env.CORS_ORIGIN || process.env.CLIENT_URL || 'http://localhost:3000';
-const SMTP_HOST = process.env.SMTP_HOST;
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_SECURE = process.env.SMTP_SECURE === 'true';
-const SMTP_USER = process.env.SMTP_USER;
-const SMTP_PASS = process.env.SMTP_PASS;
-const SMTP_FROM = process.env.SMTP_FROM;
-const EMAIL_CODE_TTL_MIN = Number(process.env.EMAIL_CODE_TTL_MIN || 10);
-const EMAIL_RESEND_COOLDOWN_SEC = Number(process.env.EMAIL_RESEND_COOLDOWN_SEC || 60);
-const EMAIL_RESEND_MAX_PER_HOUR = Number(process.env.EMAIL_RESEND_MAX_PER_HOUR || 3);
+
+// ===== РЕГИСТРАЦИЯ БЕЗ ПОЧТЫ =====
+// invite — аккаунт создаётся только по одноразовому коду от администратора;
+// open   — свободная регистрация (коды не нужны, но и защита слабее).
+const REGISTRATION_MODE = process.env.REGISTRATION_MODE === 'open' ? 'open' : 'invite';
+// Сколько дней живёт выданный инвайт. 0 или пусто — бессрочно.
+const INVITE_TTL_DAYS = Number(process.env.INVITE_TTL_DAYS || 0);
+// Срок жизни одноразовой ссылки сброса пароля, которую выдаёт админ.
+const PASSWORD_RESET_TTL_MIN = Number(process.env.PASSWORD_RESET_TTL_MIN || 30);
 const IMAGE_PROXY_BASE_URL = process.env.IMAGE_PROXY_BASE_URL || '';
 
 module.exports = {
@@ -62,14 +62,8 @@ module.exports = {
   COOKIE_DOMAIN,
   COOKIE_SECURE,
   CORS_ORIGIN,
-  SMTP_HOST,
-  SMTP_PORT,
-  SMTP_SECURE,
-  SMTP_USER,
-  SMTP_PASS,
-  SMTP_FROM,
-  EMAIL_CODE_TTL_MIN,
-  EMAIL_RESEND_COOLDOWN_SEC,
-  EMAIL_RESEND_MAX_PER_HOUR,
+  REGISTRATION_MODE,
+  INVITE_TTL_DAYS,
+  PASSWORD_RESET_TTL_MIN,
   IMAGE_PROXY_BASE_URL
 };

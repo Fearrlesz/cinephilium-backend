@@ -1,0 +1,4 @@
+#!/bin/sh
+# Git вызывает этот файл перед каждым коммитом (core.hooksPath = .githooks).
+# Вся логика — в scripts/check-secrets.js, чтобы её можно было запускать и тестировать отдельно.
+exec node "$(dirname "$0")/../scripts/check-secrets.js"
