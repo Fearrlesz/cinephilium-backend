@@ -9,6 +9,7 @@ const { extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const { getUserAchievements } = require('../utils/achievements');
+const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError } = require('../utils/errors');
@@ -25,9 +26,9 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     const user = await User.findById(userId).select('-password');
     if (!user) throw new NotFoundError('Пользователь не найден');
 
-    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster year');
+    const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster posterPath year');
     const reviews  = await Review.find({ userId })
-      .populate('filmId', 'title poster year')
+      .populate('filmId', 'title poster posterPath year')
       .populate('ratingId');
     const comments = await Comment.find({ userId }).populate('filmId', 'title');
 
@@ -55,7 +56,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
       },
       ratings: ratings.map(r => ({
         id: r._id,
-        film: r.filmId,
+        film: withPosterUrl(r.filmId),
         technicalScore: r.technicalScore,
         combinedScore:  r.combinedScore,
         vibe:           r.vibe,
@@ -68,8 +69,8 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
       reviews: reviews.map(r => ({
         _id: r._id,
         id: r._id,
-        film: r.filmId,
-        filmId: r.filmId,
+        film: withPosterUrl(r.filmId),
+        filmId: withPosterUrl(r.filmId),
         ratingId: r.ratingId,
         title: r.title,
         text: r.text,

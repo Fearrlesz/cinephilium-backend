@@ -11,6 +11,7 @@ const { verifyAccessToken } = require('../utils/jwt');
 const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
+const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ForbiddenError, ValidationError } = require('../utils/errors');
@@ -48,10 +49,13 @@ router.post('/', writeLimiter, [
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster')
+      .populate('filmId', 'title poster posterPath')
       .populate('ratingId');
 
-    res.json(reviewWithUser);
+    res.json({
+      ...reviewWithUser.toObject(),
+      filmId: withPosterUrl(reviewWithUser.filmId)
+    });
   } catch (error) {
     throw error;
   }
@@ -62,11 +66,14 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
   try {
     const reviews = await Review.find({ userId: req.userId })
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster year')
+      .populate('filmId', 'title poster posterPath year')
       .populate('ratingId')
       .sort({ createdAt: -1 });
 
-    res.json(reviews);
+    res.json(reviews.map(review => ({
+      ...review.toObject(),
+      filmId: withPosterUrl(review.filmId)
+    })));
   } catch (error) {
     throw error;
   }
@@ -79,12 +86,15 @@ router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res,
   try {
     const review = await Review.findById(req.params.id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster description director actors genres year')
+      .populate('filmId', 'title poster posterPath description director actors genres year')
       .populate('ratingId');
 
     if (!review) throw new NotFoundError('Рецензия не найдена');
 
-    res.json(review);
+    res.json({
+      ...review.toObject(),
+      filmId: withPosterUrl(review.filmId)
+    });
   } catch (error) {
     throw error;
   }
@@ -112,11 +122,14 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
       ...statusFilter
     })
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster')
+      .populate('filmId', 'title poster posterPath')
       .populate('ratingId')
       .sort({ createdAt: -1 });
 
-    res.json(reviews);
+    res.json(reviews.map(review => ({
+      ...review.toObject(),
+      filmId: withPosterUrl(review.filmId)
+    })));
   } catch (error) {
     throw error;
   }

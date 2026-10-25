@@ -19,6 +19,7 @@ const {
 } = require('../config/scoring');
 const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
+const { withPosterUrl } = require('../utils/poster');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 
 const asyncHandler = require('../utils/asyncHandler');
@@ -156,7 +157,10 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
       .populate('filmId')
       .sort({ createdAt: -1 });
 
-    res.json(ratings);
+    res.json(ratings.map(rating => ({
+      ...rating.toObject(),
+      filmId: withPosterUrl(rating.filmId)
+    })));
   } catch (error) {
     throw error;
   }
@@ -169,11 +173,14 @@ router.get('/:id/details', validateObjectId('id'), asyncHandler(async (req, res,
   try {
     const rating = await Rating.findById(req.params.id)
       .populate('userId', 'nickname isAdmin')
-      .populate('filmId', 'title poster');
+      .populate('filmId', 'title poster posterPath');
 
     if (!rating) throw new NotFoundError('Оценка не найдена');
 
-    res.json(rating);
+    res.json({
+      ...rating.toObject(),
+      filmId: withPosterUrl(rating.filmId)
+    });
   } catch (error) {
     throw error;
   }

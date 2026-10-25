@@ -46,6 +46,7 @@ const SMTP_FROM = process.env.SMTP_FROM;
 const EMAIL_CODE_TTL_MIN = Number(process.env.EMAIL_CODE_TTL_MIN || 10);
 const EMAIL_RESEND_COOLDOWN_SEC = Number(process.env.EMAIL_RESEND_COOLDOWN_SEC || 60);
 const EMAIL_RESEND_MAX_PER_HOUR = Number(process.env.EMAIL_RESEND_MAX_PER_HOUR || 3);
+const IMAGE_PROXY_BASE_URL = process.env.IMAGE_PROXY_BASE_URL || '';
 
 module.exports = {
   EXCLUSIVE_NICKNAME,
@@ -66,5 +67,6 @@ module.exports = {
   SMTP_FROM,
   EMAIL_CODE_TTL_MIN,
   EMAIL_RESEND_COOLDOWN_SEC,
-  EMAIL_RESEND_MAX_PER_HOUR
+  EMAIL_RESEND_MAX_PER_HOUR,
+  IMAGE_PROXY_BASE_URL
 };

@@ -10,6 +10,7 @@ const { verifyAccessToken } = require('../utils/jwt');
 const { roundTenth } = require('../config/scoring');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+const { withPosterUrl } = require('../utils/poster');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -63,7 +64,7 @@ router.get('/top', asyncHandler(async (req, res, next) => {
       { $limit: limit }
     ]);
 
-    res.json({ films, sort: sortField, limit });
+    res.json({ films: films.map(withPosterUrl), sort: sortField, limit });
   } catch (error) {
     throw error;
   }
@@ -80,7 +81,7 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
     if (!film) film = await Film.findOne({ title: { $regex: new RegExp(title, 'i') } });
     if (!film) throw new NotFoundError('Фильм не найден');
 
-    res.json(film);
+    res.json(withPosterUrl(film));
   } catch (error) {
     throw error;
   }
@@ -122,7 +123,7 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     }
 
     res.json({
-      ...film.toObject(),
+      ...withPosterUrl(film),
       averageRating:   roundTenth(avgTechnical),
       averageVibe:     roundTenth(avgVibe),
       averageCombined: roundTenth(avgCombined),
@@ -246,7 +247,7 @@ router.get('/', asyncHandler(async (req, res, next) => {
     const total = await Film.countDocuments();
 
     res.json({
-      films,
+      films: films.map(withPosterUrl),
       pagination: { page, limit, total, pages: Math.ceil(total / limit) },
       sort: sortField
     });
@@ -283,7 +284,8 @@ router.post('/import', writeLimiter, authenticate, [
       tmdbId:      filmData.id,
       title:       filmData.title,
       year:        filmData.release_date ? new Date(filmData.release_date).getFullYear() : null,
-      poster:      posterPath ? `https://image.tmdb.org/t/p/w500${posterPath}` : '',
+      posterPath:  posterPath || '',
+      poster:      '',
       description: (filmData.overview || enData.overview || '').slice(0, 1000),
       genres:      filmData.genres?.map(g => g.name) || [],
       director:    filmData.credits?.crew?.find(c => c.job === 'Director')?.name || 'Неизвестен',
@@ -303,7 +305,7 @@ router.post('/import', writeLimiter, authenticate, [
       await Film.findOneAndUpdate({ tmdbId: filmData.id }, filmDataForSave);
       const updatedFilm = await Film.findOne({ tmdbId: filmData.id });
       return res.status(200).json({
-        film: updatedFilm,
+        film: withPosterUrl(updatedFilm),
         alreadyExists: true,
         message: 'Фильм уже есть в каталоге, данные обновлены'
       });
@@ -315,7 +317,7 @@ router.post('/import', writeLimiter, authenticate, [
     await updateAchievements(req.userId);
 
     res.status(201).json({
-      film,
+      film: withPosterUrl(film),
       alreadyExists: false,
       message: 'Фильм успешно добавлен'
     });
