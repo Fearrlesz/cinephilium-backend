@@ -58,13 +58,24 @@ function errorHandler(err, req, res, next) {
     message = err.message;
   }
 
-  console.error('[ERROR]', {
-    code: err.code,
-    message: err.message,
-    stack: err.stack,
-    path: req.path,
-    method: req.method
-  });
+  // 4xx — ожидаемые ответы (истёк токен, битый id, лимит, 404). Их стек в логах
+  // только шумит и на Render выглядит как падение сервиса. 5xx — всегда со стеком.
+  if (statusCode >= 500) {
+    console.error('[ERROR]', {
+      code,
+      message,
+      stack: err.stack,
+      path: req.path,
+      method: req.method
+    });
+  } else {
+    console.warn('[WARN]', {
+      code,
+      message,
+      path: req.path,
+      method: req.method
+    });
+  }
 
   return res.status(statusCode).json({
     error: { code, message, details: details ?? undefined }

@@ -87,6 +87,16 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Render и внешние мониторинги дёргают корень домена. Без этого маршрута каждый
+// health-check писал в лог 404 со стеком и выглядел как ошибка приложения.
+app.get('/', (_req, res) => {
+  res.json({
+    service: 'cinephilium-backend',
+    status: 'ok',
+    health: '/api/health'
+  });
+});
+
 if (process.env.NODE_ENV === 'test') {
   app.get('/api/test/internal-error', asyncHandler(async () => {
     throw new Error('boom');

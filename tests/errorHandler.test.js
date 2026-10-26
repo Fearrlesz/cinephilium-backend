@@ -35,6 +35,36 @@ test('unknown routes use the standard not-found error', async () => {
   });
 });
 
+test('корень отвечает 200, чтобы health-check не сыпал 404', async () => {
+  const response = await fetch(`${baseUrl}/`);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.service, 'cinephilium-backend');
+  assert.equal(body.health, '/api/health');
+});
+
+test('ожидаемые 4xx пишутся в warn без стека', async () => {
+  const originalWarn = console.warn;
+  const originalError = console.error;
+  const warnings = [];
+  const errors = [];
+  console.warn = (...args) => warnings.push(args);
+  console.error = (...args) => errors.push(args);
+  try {
+    const response = await fetch(`${baseUrl}/api/nonexistent`);
+    assert.equal(response.status, 404);
+    assert.ok(
+      warnings.some(args => JSON.stringify(args).includes('NOT_FOUND')),
+      '404 должен попасть в warn'
+    );
+    assert.ok(!JSON.stringify(warnings).includes('stack'), 'в warn не должно быть стека');
+    assert.equal(errors.length, 0, '404 не должен выглядеть как ошибка');
+  } finally {
+    console.warn = originalWarn;
+    console.error = originalError;
+  }
+});
+
 test('registration validation reports the nickname field', async () => {
   const response = await fetch(`${baseUrl}/api/auth/register`, {
     method: 'POST',
