@@ -323,7 +323,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test
 ```
 
-105 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
+107 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
 поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
 
 | Файл | Тестов |
@@ -333,7 +333,7 @@ npm test
 | `tests/contact.test.js` | 11 |
 | `tests/counters.test.js` | 15 |
 | `tests/errorHandler.test.js` | 9 |
-| `tests/poster.test.js` | 15 |
+| `tests/poster.test.js` | 17 |
 | `tests/regression.test.js` | 28 |
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,

@@ -237,6 +237,41 @@ test('TMDB image proxy rejects unsupported sizes', async () => {
   assert.deepEqual(JSON.parse(response.body), { error: 'Invalid size' });
 });
 
+test('TMDB image proxy accepts w200 — размер из поиска на фронтенде', async () => {
+  const response = await invokeImageHandler(
+    { path: '/search-result.jpg', size: 'w200' },
+    'GET',
+    async url => {
+      assert.equal(url, 'https://image.tmdb.org/t/p/w200/search-result.jpg');
+      return new Response(Buffer.from('search-poster'), {
+        headers: { 'content-type': 'image/jpeg', 'content-length': '13' }
+      });
+    }
+  );
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, 'search-poster');
+});
+
+test('алиас /api/poster/w200/... тоже отдаёт постер', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async url => {
+    assert.equal(url, 'https://image.tmdb.org/t/p/w200/alias.jpg');
+    return new Response(Buffer.from('alias-poster'), {
+      headers: { 'content-type': 'image/jpeg', 'content-length': '12' }
+    });
+  };
+
+  try {
+    const response = await requestFetch(`${baseUrl}/api/poster/w200/alias.jpg`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/jpeg');
+    assert.equal(await response.text(), 'alias-poster');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('TMDB image proxy streams image bytes and sets cache headers', async () => {
   const response = await invokeImageHandler(
     { path: '/abc.jpg' },
