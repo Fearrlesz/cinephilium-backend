@@ -11,6 +11,8 @@ const passwordResetSchema = new mongoose.Schema({
 
 const countersSchema = new mongoose.Schema({
   ratings: { type: Number, default: 0 },
+  // Сколько сейчас стоит именно vibe-оценок (без 15 критериев).
+  vibes: { type: Number, default: 0 },
   reviews: { type: Number, default: 0 },
   reviewsApproved: { type: Number, default: 0 },
   comments: { type: Number, default: 0 },
@@ -62,7 +64,10 @@ const userSchema = new mongoose.Schema({
   // (выставляется скриптом flag-sybil-accounts для ферм).
   trustWeight:    { type: Number, default: 1, min: 0, max: 1 },
   flagged:        { type: Boolean, default: false },
-  registeredAt:   { type: Date, default: Date.now }
+  registeredAt:   { type: Date, default: Date.now },
+  // Скользящее окно созданных vibe-оценок для дневного капа (50/24ч).
+  // Служебное поле, наружу не отдаётся.
+  vibeWindow:     { type: [Date], default: undefined, select: false }
 });
 
 userSchema.index({ registeredIp: 1, registeredAt: -1 });

@@ -2,6 +2,7 @@ const User = require('../models/User');
 
 const counterFields = new Set([
   'ratings',
+  'vibes',
   'reviews',
   'reviewsApproved',
   'comments',

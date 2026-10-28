@@ -138,7 +138,9 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
       averageVibe:     roundTenth(avgVibe),
       averageCombined: roundTenth(avgCombined),
       votesCount,
-      userRating
+      userRating: userRating
+        ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
+        : null
     });
   } catch (error) {
     throw error;
@@ -153,7 +155,7 @@ router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res,
   try {
     const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname avatar isAdmin')
-      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
+      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores completeness')
       .sort({ createdAt: -1 });
 
     const formattedRatings = ratings.map(r => ({
@@ -163,6 +165,7 @@ router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res,
         combinedScore:  r.combinedScore,
         finalScore:     r.combinedScore,
         vibe:           r.vibe,
+        completeness:   r.completeness || 'full',
         textReview:     r.textReview,
         likes:          r.likes,
         createdAt:      r.createdAt,
@@ -192,7 +195,7 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
   try {
     const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname isAdmin')
-      .select('combinedScore technicalScore')
+      .select('combinedScore technicalScore completeness')
       .lean();
 
     const result = ratings.map(r => ({
@@ -205,7 +208,8 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
         _id:            r._id,
         finalScore:     r.combinedScore ?? r.technicalScore ?? 0,
         technicalScore: r.technicalScore,
-        combinedScore:  r.combinedScore
+        combinedScore:  r.combinedScore,
+        completeness:   r.completeness || 'full'
       }
     }));
 

@@ -1,6 +1,67 @@
-# Changelog — Cinephilium 4.3
+# Changelog — Cinephilium 5.0
 
-**Дата и время среза: 28.10.2026 (Europe/Moscow, UTC+03:00)**
+**Дата и время среза: 29.10.2026 (Europe/Moscow, UTC+03:00)**
+
+## 5.0 — P1: двухступенчатая оценка (vibe → full)
+
+**Дата: 29.10.2026.**
+
+### Модель
+
+- `Rating.completeness`: `'vibe' | 'full'`, по умолчанию `'full'` для обратной совместимости.
+- `Rating.scores` больше не `required` на уровне схемы: полноту по-прежнему проверяет
+  роут, а pre-validate не даёт сохранить full без 15 критериев.
+- `technicalScore` и `combinedScore`: `min: 0`; `0` — маркер «не вычислено»
+  (`// DECISION: 2A`).
+- `Rating.vibeCreatedAt` + индекс `{userId, vibeCreatedAt}` для дневного капа.
+- `User.counters.vibes`; служебное `User.vibeWindow` (не отдаётся наружу).
+- `Event.type` расширен значением `'vibe'`.
+
+### API
+
+- `POST /api/ratings` принимает два вида payload:
+  - `{ filmId, vibe }` — vibe-оценка (`technicalScore = 0`, `combinedScore = 0`,
+    `scores` отсутствует);
+  - полный payload, как раньше; старый фронт работает без изменений.
+- Апгрейд vibe → full — та же запись (`_id`, `createdAt`, уникальность `(userId, filmId)`);
+  `completeness` меняется на `'full'`.
+- `// DECISION: 1A` — даунгрейда нет: vibe-запрос к full-оценке → `400 ALREADY_FULL_RATING`.
+- `// DECISION: 3A` — `vibe` можно изменить при апгрейде; если поле не пришло,
+  берётся вайб из существующей записи.
+- `weight` при апгрейде сохраняется из существующей записи (включая `0`),
+  `ip` обновляется, `createdAt` не меняется.
+- Дневной кап: 50 новых vibe за скользящие 24 часа, проверяется атомарной
+  pipeline-операцией по `User.vibeWindow` до создания; 51-й → `429 VIBE_LIMIT_REACHED`
+  с `details: { limit, window: '24h', retryAt }`. Апгрейд капом не ограничен.
+- `completeness` отдаётся везде, где API возвращает рейтинг: создание/обновление,
+  `userRating`, `/ratings/user`, `/films/:id/ratings`, `/films/:id/users`,
+  `/ratings/:id/details`, профиль пользователя.
+
+### Геймификация
+
+- Vibe: **+2** балла, `counters.vibes +1`, событие `type: 'vibe'`
+  (`score: null`, `metadata: { vibe, completeness: 'vibe' }`), достижения не пересчитываются.
+- Full: **+8** при апгрейде (суммарно 10), `counters.ratings +1`, `counters.vibes −1`,
+  событие `'rating'`, `updateAchievements`. Новая полная оценка — как раньше: +10 (+20 админу).
+- Прогресс достижений: `effective = counters.ratings + counters.vibes / 5`;
+  пороги 20 / 50 / 100 / 200 (константы `RATING_20`, `RATING_50`, `RATING_100`, `RATING_200`).
+- Новая ачивка `FIRST_VIBE` («Первое впечатление»); `FIRST_RATING` — только за первую
+  полную; `FIRST_FRAME` — первые 100 зарегистрированных **и** хотя бы одна полная.
+- Существующие достижения не отбираются: `updateAchievements` только добавляет новые.
+
+### Миграция
+
+- `scripts/migrate-p1-vibe-ratings.js`: `Rating` без `completeness` → `'full'`,
+  `User` без `counters.vibes` → `0`. Идемпотентно, есть `--dry-run`.
+- Запускать до деплоя; порядок и ожидаемый вывод — в README, §11.
+
+### Тесты
+
+- Добавлен `tests/vibe-rating.test.js` (14 тестов) на `mongodb-memory-server`:
+  лайт, full, повторный лайт, апгрейд с сохранением `weight`/обновлением `ip`,
+  запрет даунгрейда, строгий лайт, кап 50/24ч (включая границу 49/50 и скользящее окно),
+  достижения, выдача `completeness`, повторная full без двойных баллов, миграция.
+- Всего 126 тестов; старый набор (112) проходит на in-memory MongoDB.
 
 ## 4.3 — рецензии, свои черновики и вес голосов
 

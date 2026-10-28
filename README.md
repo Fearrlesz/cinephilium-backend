@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 4.3. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.0. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -201,11 +201,11 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, …), achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
-| `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
+| `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
 | `reviews` | userId, filmId, ratingId, title, text (350..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
@@ -223,7 +223,8 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 |---|---|
 | Регистрация | 10 аккаунтов/час с одного IP (считаются и успешные) + одноразовый инвайт-код на аккаунт |
 | Оценки | 40/час с одного IP, одна оценка на пару user+film |
-| Вес голоса | `Rating.weight` (0..1) копируется из `User.trustWeight` |
+| Vibe-оценки | 50 за скользящие 24 часа на пользователя; лимит проверяется атомарно до создания (`429 VIBE_LIMIT_REACHED`). Апгрейд vibe → full капом не ограничен |
+| Вес голоса | `Rating.weight` (0..1) копируется из `User.trustWeight` при создании; при апгрейде сохраняется вес существующей записи (включая `0`) |
 | Агрегаты | `$lookup` фильтрует `weight: { $ne: 0 }`, значит помеченные оценки не влияют на средние, топ фильмов и «votesCount» |
 | Рейтинг | `/api/top/users` исключает `flagged: true` |
 | Детектор | `scripts/flag-sybil-accounts.js`: кластеры `>= 5` аккаунтов за час с одного IP → `trustWeight = 0`, `weight = 0` |
@@ -233,6 +234,15 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 Списки `/api/films/:id/ratings` и `/api/films/:id/users` тоже фильтруют `weight: 0`,
 поэтому помеченные оценки не видны и в карточке фильма, а не только в средних.
+
+### Достижения
+
+- Вес прогресса: `effective = counters.ratings + counters.vibes / 5` (пять vibe = одна
+  полная). Пороги: 20 / 50 / 100 / 200.
+- `FIRST_RATING` — только за первую полную оценку; `FIRST_VIBE` — за первую vibe.
+- `FIRST_FRAME` — первые 100 зарегистрированных **и** хотя бы одна полная оценка.
+- Уже выданные достижения не отбираются: `updateAchievements` только добавляет новые.
+- На vibe `updateAchievements` не вызывается; пересчёт происходит на полной оценке.
 
 **Ограничение:** распределённая ферма (много IP и много инвайтов) так не ловится.
 Следующие шаги при необходимости: CAPTCHA (Turnstile/hCaptcha) на регистрацию, выдача инвайтов
@@ -292,9 +302,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| POST | `/api/ratings` | access | поставить/обновить оценку |
-| GET | `/api/ratings/user` | access | свои оценки |
-| GET | `/api/ratings/:id/details` | — | детали оценки |
+| POST | `/api/ratings` | access | vibe-оценка `{filmId, vibe}` **или** полная `{filmId, vibe, scores, …}`; ответ содержит `completeness` |
+| GET | `/api/ratings/user` | access | свои оценки (с `completeness`) |
+| GET | `/api/ratings/:id/details` | — | детали оценки (с `completeness`) |
 | POST | `/api/reviews` | access | рецензия (350..15000 символов), `ratingId` — своя оценка этого же фильма |
 | GET | `/api/reviews/:filmId` | — | одобренные рецензии; свой черновик видит автор, всё — админ |
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
@@ -303,6 +313,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | POST | `/api/comments` | access | комментарий или ответ |
 | GET | `/api/comments/:filmId` | — | комментарии с ответами; свой черновик видит автор |
 | POST | `/api/comments/:id/like` | access | лайк, +1 автору |
+
+Ошибки `POST /api/ratings` для двухступенчатой оценки:
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `ALREADY_FULL_RATING` | 400 | пришла vibe-оценка, а у пары user+film уже стоит полная |
+| `VIBE_LIMIT_REACHED` | 429 | больше 50 новых vibe за 24 часа; `details: { limit, window: '24h', retryAt }` |
 
 ### Пользователи, топ, события, админ
 
@@ -335,11 +352,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 ## 10. Тесты
 
 ```bash
-npm test
+npm test              # весь набор; нужен MongoDB на 127.0.0.1:27017
+npm run test:vibe     # только B1, сам поднимает in-memory MongoDB
 ```
 
-112 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
-поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
+126 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`)
+и 14 в `vibe-rating.test.js`, который сам поднимает in-memory MongoDB. У каждого файла
+своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -350,6 +369,9 @@ npm test
 | `tests/errorHandler.test.js` | 9 |
 | `tests/poster.test.js` | 17 |
 | `tests/regression.test.js` | 33 |
+| `tests/vibe-rating.test.js` | 14 |
+
+`vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -413,13 +435,50 @@ node scripts/reconcile-counters.js
 Если что-то пошло не так — восстановление из бэкапа:
 `mongorestore --uri="$MONGODB_URI" ./backup-2026-10-25`.
 
+### P1 — двухступенчатая оценка (vibe/full)
+
+Что делает миграция:
+
+- `Rating` без `completeness` → `completeness: 'full'` (все старые оценки — полные);
+- `User` без `counters.vibes` → `counters.vibes: 0`.
+
+Скрипт идемпотентен, значения существующих полей не перезаписывает. Запускать **до деплоя**
+нового кода, в Render Shell или на машине с доступом к базе.
+
+```bash
+# 0. Бэкап. Обязательно.
+mongodump --uri="$MONGODB_URI" --out=./backup-$(date +%F)
+# ожидаемо: ... done dumping cinephilium.ratings (N documents)
+
+# 1. Сухой прогон: только считает, ничего не пишет.
+node scripts/migrate-p1-vibe-ratings.js --dry-run
+# ожидаемо: [migrate-p1] dry-run: ratings без completeness=1287, users без counters.vibes=48
+
+# 2. Боевой прогон.
+node scripts/migrate-p1-vibe-ratings.js
+# ожидаемо: [migrate-p1] обновлено: ratings=1287, users=48
+
+# 3. Повторный сухой прогон — проверка идемпотентности.
+node scripts/migrate-p1-vibe-ratings.js --dry-run
+# ожидаемо: ratings без completeness=0, users без counters.vibes=0
+
+# 4. Прямая проверка в базе.
+mongosh "$MONGODB_URI" --quiet --eval 'db.ratings.countDocuments({ completeness: { $exists: false } })'
+# ожидаемо: 0
+mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes": { $exists: false } })'
+# ожидаемо: 0
+```
+
+Только после шага 4 — деплой. Числа в примере условные; важны нули на шагах 3–4.
+
 ---
 
 ## 12. Деплой
 
 **Бэкенд (Render или любой Node-хостинг):**
 
-1. Build: `npm ci`; Start: `npm start`.
+1. Build: `npm ci --omit=dev`; Start: `npm start`. `mongodb-memory-server` —
+   devDependency только для тестов, на проде его ставить не нужно.
 2. Env: все обязательные + `NODE_ENV=production`, `COOKIE_SECURE=true`,
    `CORS_ORIGIN=https://<фронт>`, `CLIENT_URL=https://<фронт>`, `COOKIE_DOMAIN` не задавать.
    `IMAGE_PROXY_BASE_URL` можно не задавать вовсе — тогда постеры ссылаются на origin
@@ -463,6 +522,7 @@ node scripts/set-telegram.js <никнейм> @tg  # телеграм для с�
 node scripts/migrate-counters.js          # первичный расчёт counters
 node scripts/reconcile-counters.js        # сверка counters с документами
 node scripts/migrate-posters.js           # poster -> posterPath
+node scripts/migrate-p1-vibe-ratings.js   # P1: completeness + counters.vibes
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
@@ -479,6 +539,8 @@ node scripts/demo-registration.js               # демо-прогон реги
 - Нет удаления оценок/рецензий → награды не откатываются.
 - `updateAchievements` молча логирует ошибку, если соединение с Mongo не готово.
 - Достижения пересчитываются только при действиях, а не по расписанию.
+- Vibe-оценки попадают в старые агрегаты (`$avg` по `technicalScore`/`combinedScore`)
+  как нули — до B2 средние и топ по фильмам будут занижены на смешанных данных.
 - Нет OpenAPI-схемы; контракт описан здесь и в тестах.
 
 ---
@@ -492,5 +554,5 @@ src/                приложение (см. §4)
 tests/              node:test
 .env.example        шаблон окружения
 .githooks/          pre-commit: не пускает секреты в git
-CHANGELOG.md        что изменилось в 4.x и почему
+CHANGELOG.md        что изменилось в 5.x и почему
 ```

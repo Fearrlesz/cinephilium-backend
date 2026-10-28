@@ -66,6 +66,7 @@ async function sendProfile(req, res, userId) {
       technicalScore: r.technicalScore,
       combinedScore:  r.combinedScore,
       vibe:           r.vibe,
+      completeness:   r.completeness || 'full',
       genrePreset:    r.genrePreset,
       blockWeights:   r.blockWeights,
       scores:         r.scores,
@@ -97,13 +98,14 @@ async function sendAchievements(res, userId) {
   if (!user) throw new NotFoundError('Пользователь не найден');
 
   const ratingsCount  = user.counters?.ratings || 0;
+  const vibesCount    = user.counters?.vibes || 0;
   const reviewsCount  = user.counters?.reviewsApproved || 0;
   const commentsCount = user.counters?.commentsApproved || 0;
 
   const allPossible = await getUserAchievements(
     userObjectId,
     mongoose.connection.db,
-    ratingsCount,
+    { ratings: ratingsCount, vibes: vibesCount },
     reviewsCount,
     commentsCount
   );
@@ -113,7 +115,12 @@ async function sendAchievements(res, userId) {
     earned: user.achievements || [],
     possible: allPossible,
     totalPoints: user.totalPoints || 0,
-    progress: { ratings: ratingsCount, reviews: reviewsCount, comments: commentsCount }
+    progress: {
+      ratings: ratingsCount,
+      vibes: vibesCount,
+      reviews: reviewsCount,
+      comments: commentsCount
+    }
   });
 }
 

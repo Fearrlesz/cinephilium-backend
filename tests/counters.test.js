@@ -142,7 +142,7 @@ test('3. creating a pending review increments only reviews', async () => {
   await withOverrides([
     ...counterUpdateOverrides(calls),
     [Film, 'findById', async () => film],
-    [Rating, 'findOne', async () => ({ _id: ratingId, userId })],
+    [Rating, 'findOne', async () => ({ _id: ratingId, userId, filmId })],
     [Review, 'findOne', async () => null],
     [Review.prototype, 'save', async function save() {}],
     [Review, 'findById', () => query(review)]
@@ -266,7 +266,7 @@ test('11. migration recomputes counters for three users', async () => {
   const overrides = [
     [User, 'find', () => ({ select() { return this; }, lean() { return this; }, cursor() { return (async function* () { yield* users; })(); } })],
     [User, 'updateOne', async (filter, update) => { updates.push({ filter, update }); return {}; }],
-    [Rating, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 1],
+    [Rating, 'countDocuments', async ({ userId: id, completeness }) => completeness === 'vibe' ? 1 : ids.indexOf(id) + 1],
     [Review, 'countDocuments', async filter => filter.status ? ids.indexOf(filter.userId) : ids.indexOf(filter.userId) + 2],
     [Comment, 'countDocuments', async filter => filter.status ? ids.indexOf(filter.userId) + 1 : ids.indexOf(filter.userId) + 3],
     [Action, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 4]
@@ -277,7 +277,7 @@ test('11. migration recomputes counters for three users', async () => {
     assert.deepEqual(result, { processed: 3, errors: 0 });
     assert.equal(updates.length, 3);
     assert.deepEqual(updates[1].update.$set.counters, {
-      ratings: 2, reviews: 3, reviewsApproved: 1, comments: 4, commentsApproved: 2,
+      ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 4, commentsApproved: 2,
       filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 5
     });
   });
@@ -320,14 +320,14 @@ test('counter helper rejects unknown fields and guards negative updates', async 
 
 test('counter migration uses the same expected values as countDocuments', async () => {
   const overrides = [
-    [Rating, 'countDocuments', async () => 2],
+    [Rating, 'countDocuments', async ({ completeness }) => completeness === 'vibe' ? 1 : 2],
     [Review, 'countDocuments', async filter => filter.status === 'approved' ? 1 : 3],
     [Comment, 'countDocuments', async filter => filter.status === 'approved' ? 4 : 5],
     [Action, 'countDocuments', async () => 6]
   ];
   await withOverrides(overrides, async () => {
     assert.deepEqual(await countUserCounters(userId), {
-      ratings: 2, reviews: 3, reviewsApproved: 1, comments: 5, commentsApproved: 4,
+      ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 5, commentsApproved: 4,
       filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 6
     });
   });

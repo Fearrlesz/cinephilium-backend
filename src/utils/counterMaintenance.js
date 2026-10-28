@@ -13,8 +13,9 @@ const unsupportedCounters = {
 };
 
 async function countUserCounters(userId) {
-  const [ratings, reviews, reviewsApproved, comments, commentsApproved, likesReceived] = await Promise.all([
-    Rating.countDocuments({ userId }),
+  const [ratings, vibes, reviews, reviewsApproved, comments, commentsApproved, likesReceived] = await Promise.all([
+    Rating.countDocuments({ userId, completeness: 'full' }),
+    Rating.countDocuments({ userId, completeness: 'vibe' }),
     Review.countDocuments({ userId }),
     Review.countDocuments({ userId, status: 'approved' }),
     Comment.countDocuments({ userId }),
@@ -24,6 +25,7 @@ async function countUserCounters(userId) {
 
   return {
     ratings,
+    vibes,
     reviews,
     reviewsApproved,
     comments,

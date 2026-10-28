@@ -11,3 +11,4 @@ coverage/
 .tooling/
 .cache/
 .npm-cache/
+.mongo-test/

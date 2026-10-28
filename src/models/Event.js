@@ -4,7 +4,7 @@ const eventSchema = new mongoose.Schema({
   type: {
     type: String,
     required: true,
-    enum: ['rating', 'review', 'comment', 'film_add', 'achievement']
+    enum: ['rating', 'vibe', 'review', 'comment', 'film_add', 'achievement']
   },
   user:      { type: String, required: true },
   film:      { type: String, default: '' },

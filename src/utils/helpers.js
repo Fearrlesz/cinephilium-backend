@@ -20,13 +20,14 @@ async function updateAchievements(userId) {
     const countersUser = await User.findById(userId).select('counters').lean();
     if (!countersUser) return;
     const ratingsCount  = countersUser.counters?.ratings || 0;
+    const vibesCount    = countersUser.counters?.vibes || 0;
     const reviewsCount  = countersUser.counters?.reviewsApproved || 0;
     const commentsCount = countersUser.counters?.commentsApproved || 0;
 
     const allPossible = await getUserAchievements(
       userId,
       mongoose.connection.db,
-      ratingsCount,
+      { ratings: ratingsCount, vibes: vibesCount },
       reviewsCount,
       commentsCount
     );
