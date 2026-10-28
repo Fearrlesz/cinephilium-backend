@@ -151,7 +151,7 @@ router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res,
   if (checkValidation(req, next)) return;
 
   try {
-    const ratings = await Rating.find({ filmId: req.params.id })
+    const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname avatar isAdmin')
       .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
       .sort({ createdAt: -1 });
@@ -190,7 +190,7 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
   if (checkValidation(req, next)) return;
 
   try {
-    const ratings = await Rating.find({ filmId: req.params.id })
+    const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname isAdmin')
       .select('combinedScore technicalScore')
       .lean();

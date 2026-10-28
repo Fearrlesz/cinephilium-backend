@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 4.2. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 4.3. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -18,6 +18,7 @@ API кино-каталога: фильмы из TMDB, оценки по 15 кр
 | Регистрация | никнейм + пароль по инвайт-коду, без почты и SMTP |
 | Валидация | express-validator + ручные проверки в роутах |
 | Безопасность | helmet, express-rate-limit, NoSQL-санитайзер, CORS по списку |
+| Сжатие | `compression` (gzip) для JSON-ответов |
 
 Локально нужен запущенный MongoDB (`mongodb://127.0.0.1:27017`).
 
@@ -91,7 +92,8 @@ tests/                 node:test, у каждого файла своя БД
 ### Порядок middleware (важен)
 
 1. `cors` — до всего, чтобы ошибки тоже получали CORS-заголовки;
-2. `helmet` — заголовки безопасности;
+2. `helmet` — заголовки безопасности, сразу за ним `compression` — gzip для JSON
+   (картинки `compression` не трогает: `image/*` несжимаем);
 3. прокси постеров `/api/tmdb-image` и `/api/poster/:size/*` — **до** общего лимита,
    со своим `imageLimiter` (1200/мин): на страницу уходит 20–40 картинок, и общий лимит
    они выжигают за пару экранов;
@@ -204,7 +206,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
-| `reviews` | userId, filmId, ratingId, title, text (450..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
+| `reviews` | userId, filmId, ratingId, title, text (350..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
@@ -228,6 +230,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 Детектор запускается вручную (cron/руками), есть `--dry-run` и `--unflag`.
 Порог консервативный, чтобы не задеть семью или офис с общим IP.
+
+Списки `/api/films/:id/ratings` и `/api/films/:id/users` тоже фильтруют `weight: 0`,
+поэтому помеченные оценки не видны и в карточке фильма, а не только в средних.
 
 **Ограничение:** распределённая ферма (много IP и много инвайтов) так не ловится.
 Следующие шаги при необходимости: CAPTCHA (Turnstile/hCaptcha) на регистрацию, выдача инвайтов
@@ -290,13 +295,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | POST | `/api/ratings` | access | поставить/обновить оценку |
 | GET | `/api/ratings/user` | access | свои оценки |
 | GET | `/api/ratings/:id/details` | — | детали оценки |
-| POST | `/api/reviews` | access | рецензия (450..15000 символов) |
-| GET | `/api/reviews/:filmId` | — | одобренные рецензии (админ видит все) |
+| POST | `/api/reviews` | access | рецензия (350..15000 символов), `ratingId` — своя оценка этого же фильма |
+| GET | `/api/reviews/:filmId` | — | одобренные рецензии; свой черновик видит автор, всё — админ |
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
 | POST | `/api/reviews/:id/like` | access | лайк, +5 автору |
 | POST | `/api/comments` | access | комментарий или ответ |
-| GET | `/api/comments/:filmId` | — | комментарии с ответами |
+| GET | `/api/comments/:filmId` | — | комментарии с ответами; свой черновик видит автор |
 | POST | `/api/comments/:id/like` | access | лайк, +1 автору |
 
 ### Пользователи, топ, события, админ
@@ -333,7 +338,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test
 ```
 
-107 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
+112 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
 поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
 
 | Файл | Тестов |
@@ -344,7 +349,7 @@ npm test
 | `tests/counters.test.js` | 15 |
 | `tests/errorHandler.test.js` | 9 |
 | `tests/poster.test.js` | 17 |
-| `tests/regression.test.js` | 28 |
+| `tests/regression.test.js` | 33 |
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.

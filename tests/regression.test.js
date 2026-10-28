@@ -429,6 +429,123 @@ test('ответ на комментарий другого фильма отк�
   assert.equal(own.status, 200);
 });
 
+test('рецензия короче 350 символов отклоняется, ровно 350 — принимается', async () => {
+  const author = await createUser();
+  const film = await Film.create({ tmdbId: 21, title: 'Длина' });
+  const rating = await createRating(author._id, film._id);
+  const token = signAccessToken(author._id);
+
+  const short = await call('/api/reviews', {
+    method: 'POST', token,
+    body: {
+      filmId: String(film._id), ratingId: String(rating._id),
+      title: 'Коротко', text: 'x'.repeat(349)
+    }
+  });
+  assert.equal(short.status, 400);
+  assert.equal(short.json.error.code, 'VALIDATION_ERROR');
+  assert.equal(await Review.countDocuments({ filmId: film._id }), 0, 'короткая рецензия сохранилась');
+
+  const exact = await call('/api/reviews', {
+    method: 'POST', token,
+    body: {
+      filmId: String(film._id), ratingId: String(rating._id),
+      title: 'Ровно 350', text: 'x'.repeat(350)
+    }
+  });
+  assert.equal(exact.status, 200);
+  assert.equal(exact.json.status, 'pending');
+});
+
+test('рецензия не принимает оценку другого фильма', async () => {
+  const author = await createUser();
+  const filmA = await Film.create({ tmdbId: 22, title: 'A' });
+  const filmB = await Film.create({ tmdbId: 23, title: 'B' });
+  const ratingA = await createRating(author._id, filmA._id);
+
+  const response = await call('/api/reviews', {
+    method: 'POST', token: signAccessToken(author._id),
+    body: {
+      filmId: String(filmB._id), ratingId: String(ratingA._id),
+      title: 'Чужой фильм', text: 'x'.repeat(400)
+    }
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.json.error.code, 'VALIDATION_ERROR');
+  assert.equal(await Review.countDocuments({ filmId: filmB._id }), 0, 'рецензия с чужой оценкой сохранилась');
+});
+
+test('автор видит свой черновик рецензии в списке фильма, чужой — нет', async () => {
+  const author = await createUser();
+  const stranger = await createUser();
+  const film = await Film.create({ tmdbId: 24, title: 'Черновик' });
+  const rating = await createRating(author._id, film._id);
+  const token = signAccessToken(author._id);
+
+  const created = await call('/api/reviews', {
+    method: 'POST', token,
+    body: {
+      filmId: String(film._id), ratingId: String(rating._id),
+      title: 'Черновик', text: 'x'.repeat(400)
+    }
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.status, 'pending');
+
+  const anonymous = await call(`/api/reviews/${film._id}`);
+  assert.equal(anonymous.json.length, 0, 'аноним видит черновик');
+
+  const other = await call(`/api/reviews/${film._id}`, { token: signAccessToken(stranger._id) });
+  assert.equal(other.json.length, 0, 'чужой видит чужой черновик');
+
+  const own = await call(`/api/reviews/${film._id}`, { token });
+  assert.equal(own.json.length, 1, 'автор не видит свой черновик в карточке фильма');
+  assert.equal(own.json[0].status, 'pending');
+});
+
+test('автор видит свой черновик комментария в списке фильма, чужой — нет', async () => {
+  const author = await createUser();
+  const stranger = await createUser();
+  const film = await Film.create({ tmdbId: 25, title: 'Комментарий' });
+  const token = signAccessToken(author._id);
+
+  const created = await call('/api/comments', {
+    method: 'POST', token,
+    body: { filmId: String(film._id), text: 'Черновой комментарий' }
+  });
+  assert.equal(created.status, 200);
+  assert.equal(created.json.status, 'pending');
+
+  const anonymous = await call(`/api/comments/${film._id}`);
+  assert.equal(anonymous.json.length, 0, 'аноним видит черновик');
+
+  const other = await call(`/api/comments/${film._id}`, { token: signAccessToken(stranger._id) });
+  assert.equal(other.json.length, 0, 'чужой видит чужой черновик');
+
+  const own = await call(`/api/comments/${film._id}`, { token });
+  assert.equal(own.json.length, 1, 'автор не видит свой черновик в карточке фильма');
+  assert.equal(own.json[0].status, 'pending');
+});
+
+test('оценки с нулевым весом не попадают в списки оценок фильма', async () => {
+  const first = await createUser();
+  const second = await createUser();
+  const film = await Film.create({ tmdbId: 26, title: 'Веса' });
+  const visible = await createRating(first._id, film._id);
+  const hidden = await createRating(second._id, film._id);
+  await Rating.updateOne({ _id: hidden._id }, { $set: { weight: 0 } });
+
+  const ratings = await call(`/api/films/${film._id}/ratings`);
+  assert.equal(ratings.status, 200);
+  assert.equal(ratings.json.length, 1, 'оценка с weight: 0 попала в список оценок');
+  assert.equal(String(ratings.json[0].rating._id), String(visible._id));
+
+  const users = await call(`/api/films/${film._id}/users`);
+  assert.equal(users.status, 200);
+  assert.equal(users.json.length, 1, 'оценка с weight: 0 попала в список оценивших');
+  assert.equal(String(users.json[0].rating._id), String(visible._id));
+});
+
 // ─────────────────────────── ADMIN ───────────────────────────
 
 test('повторное одобрение не начисляет баллы и не плодит события', async () => {

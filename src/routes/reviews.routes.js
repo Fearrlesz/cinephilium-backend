@@ -26,7 +26,7 @@ router.post('/', writeLimiter, [
   body('title').notEmpty().isLength({ max: 100 }).withMessage('Заголовок не длиннее 100 символов'),
   body('text')
     .notEmpty().withMessage('Текст рецензии обязателен')
-    .isLength({ min: 450 }).withMessage('Текст рецензии должен быть не короче 450 символов')
+    .isLength({ min: 350 }).withMessage('Текст рецензии должен быть не короче 350 символов')
     .isLength({ max: 15000 }).withMessage('Текст рецензии не длиннее 15000 символов')
 ], authenticate, asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
@@ -39,6 +39,9 @@ router.post('/', writeLimiter, [
 
     const rating = await Rating.findOne({ _id: ratingId, userId: req.userId });
     if (!rating) throw new ForbiddenError('Вы не можете использовать чужую оценку для рецензии');
+    if (String(rating.filmId) !== String(film._id)) {
+      throw new ValidationError('Оценка относится к другому фильму');
+    }
 
     const existing = await Review.findOne({ userId: req.userId, filmId });
     if (existing) throw new ValidationError('Вы уже написали рецензию на этот фильм');
@@ -123,20 +126,28 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 
   try {
     let isAdmin = false;
+    let viewerId = null;
     const token = extractBearer(req);
     if (token) {
       try {
         const decoded = verifyAccessToken(token);
-        const user = await User.findById(decoded.userId);
+        viewerId = decoded.userId;
+        const user = await User.findById(viewerId).select('isAdmin');
         isAdmin = user?.isAdmin || false;
       } catch { /* игнор */ }
     }
 
-    const statusFilter = isAdmin ? {} : { status: 'approved' };
+    // Свой черновик автор должен видеть в карточке фильма сразу после отправки,
+    // иначе он «исчезает» до модерации. Чужие pending по-прежнему скрыты.
+    const visibility = isAdmin
+      ? {}
+      : viewerId
+        ? { $or: [{ status: 'approved' }, { status: 'pending', userId: viewerId }] }
+        : { status: 'approved' };
 
     const reviews = await Review.find({
       filmId: req.params.filmId,
-      ...statusFilter
+      ...visibility
     })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster posterPath')

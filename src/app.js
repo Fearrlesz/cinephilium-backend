@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser');
+const compression = require('compression');
 
 // Безопасность
 const {
@@ -42,6 +43,9 @@ app.use(corsMiddleware);
 
 // ===== БЕЗОПАСНОСТЬ (порядок важен!) =====
 app.use(helmetMiddleware);                    // 1. заголовки
+// gzip для JSON: списки фильмов и лента событий сжимаются в 3–5 раз.
+// Картинки compression пропускает сам (image/* несжимаем).
+app.use(compression());
 
 // ===== ПРОКСИ ПОСТЕРОВ TMDB =====
 // image.tmdb.org недоступен в РФ, поэтому картинки идут через этот сервер.

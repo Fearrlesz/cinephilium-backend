@@ -56,21 +56,28 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 
   try {
     let isAdmin = false;
+    let viewerId = null;
     const token = extractBearer(req);
     if (token) {
       try {
         const decoded = verifyAccessToken(token);
-        const user = await User.findById(decoded.userId);
+        viewerId = decoded.userId;
+        const user = await User.findById(viewerId).select('isAdmin');
         isAdmin = user?.isAdmin || false;
       } catch { /* игнор */ }
     }
 
-    const statusFilter = isAdmin ? {} : { status: 'approved' };
+    // Свой pending-комментарий автор видит сразу, чужие — только после одобрения.
+    const visibility = isAdmin
+      ? {}
+      : viewerId
+        ? { $or: [{ status: 'approved' }, { status: 'pending', userId: viewerId }] }
+        : { status: 'approved' };
 
     const comments = await Comment.find({
       filmId: req.params.filmId,
       parentId: null,
-      ...statusFilter
+      ...visibility
     })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: -1 });
@@ -79,7 +86,7 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
 
     const replies = await Comment.find({
       parentId: { $in: commentIds },
-      ...statusFilter
+      ...visibility
     })
       .populate('userId', 'nickname isAdmin')
       .sort({ createdAt: 1 });
