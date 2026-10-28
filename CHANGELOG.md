@@ -1,6 +1,6 @@
-# Changelog — Cinephilium 3.5
+# Changelog — Cinephilium 4.2
 
-**Дата и время среза: 26.10.2026, 02:25 (Europe/Moscow, UTC+03:00)**
+**Дата и время среза: 27.10.2026 (Europe/Moscow, UTC+03:00)**
 
 ## 4.2 — постеры в результатах поиска
 

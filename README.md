@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 3.5. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 4.2. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -46,7 +46,7 @@ npm start                 # http://localhost:3000/api/health
 | Переменная | Зачем |
 |---|---|
 | `MONGODB_URI` | строка подключения |
-| `JWT_ACCESS_SECRET` | подпись access-токенов |
+| `JWT_ACCESS_SECRET` | подпись access-токенов (старое имя `JWT_SECRET` тоже принимается) |
 | `JWT_REFRESH_SECRET` | подпись refresh-токенов (обязан отличаться от access) |
 | `TMDB_API_KEY` | импорт фильмов и поиск |
 | `ADMIN_SECRET_KEY` | активация админа через `/api/admin/make` |
@@ -80,9 +80,9 @@ src/server.js          точка входа: env → Mongo → listen
 src/app.js             сборка Express: cors → helmet → постеры → limiter → json → cookie → sanitizer → роуты → 404 → ошибки
 src/config/            env.js (конфиг), cors.js, scoring.js (формулы)
 src/middleware/        auth.js, security.js, errorHandler.js, validate.js
-src/models/            User, Invite, Film, Rating, Review, Comment, Event, Action, Session
+src/models/            User, Invite, ContactRequest, Film, Rating, Review, Comment, Event, Action, Session
 src/routes/            по одному файлу на домен
-src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, asyncHandler
+src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, helpers, points, telegram, counterMaintenance, asyncHandler
 api/tmdb-image.js      прокси постеров (Vercel + Express)
 scripts/               миграции и обслуживание данных
 tests/                 node:test, у каждого файла своя БД
@@ -140,7 +140,8 @@ Render/Cloudflare оказывается адресом edge-ноды Cloudflare
 1. Среднее по каждому блоку (1..10).
 2. Взвешенная сумма по весам блоков (сумма 100). Веса берутся из жанрового пресета
    (`drama`, `action`, `comedy`, `horror`, `scifi_block`, `scifi_author`, `musical`, `biopic`),
-   кастомных весов или дефолта `[30, 25, 20, 15, 10]`.
+   кастомных весов или дефолта `[30, 25, 20, 15, 10]`. `hybrid` — не пресет с числами,
+   а режим «свои веса»: при нём сервер использует присланный `blockWeights`.
 3. `technicalScore = roundTenth(взвешенное_среднее * 10)` → 10..100.
 4. `combinedScore = roundTenth(technicalScore * 0.7 + vibe * 3)` → 10..100.
 
@@ -199,7 +200,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
 | `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
-| `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique |
+| `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
@@ -236,7 +237,16 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 ## 9. API
 
-Все ответы — JSON. Ошибки: `{ "error": { "code", "message", "details?" } }`.
+Все ответы API — JSON, кроме прокси постеров: он отдаёт бинарь. Ошибки:
+`{ "error": { "code", "message", "details?" } }`; исключение — прокси, у него
+`{ "error": "строка" }`.
+
+### Служебное
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/health` | — | `{ status: 'ok', timestamp }` |
+| GET | `/` | — | ответ для health-check Render: `{ service, status, health }` |
 
 ### Авторизация
 
@@ -390,9 +400,10 @@ node scripts/backfill-anti-farm.js
 node scripts/reconcile-counters.js
 ```
 
-Все скрипты идемпотентны: повторный запуск ничего не портит. `--dry-run` есть у 3 и 6.
-После миграций перезапустить сервис и проверить `GET /api/health`, вход старым аккаунтом,
-и что у фильма появились постеры.
+`--dry-run` поддерживает `backfill-anti-farm.js` (шаг 6) и `flag-sybil-accounts.js`.
+Остальные скрипты идемпотентны, но `new-invite.js` при каждом запуске создаёт новые
+коды — это его работа, а не ошибка. После миграций перезапустить сервис и проверить
+`GET /api/health`, вход старым аккаунтом, и что у фильма появились постеры.
 
 Если что-то пошло не так — восстановление из бэкапа:
 `mongorestore --uri="$MONGODB_URI" ./backup-2026-10-25`.
@@ -426,7 +437,9 @@ node scripts/reconcile-counters.js
 
 **Фронтенд (Vercel):**
 
-1. `REACT_APP_API_URL=https://<бэкенд>/api`.
+1. `REACT_APP_API_URL=https://<бэкенд>/api`; при необходимости
+   `REACT_APP_BACKEND_URL=https://<бэкенд>` — origin для постеров (если не задан,
+   берётся из `REACT_APP_API_URL` без `/api`).
 2. Домен фронта должен совпадать с `CORS_ORIGIN` и `CLIENT_URL` на бэкенде, иначе
    CORS заблокирует запросы, а ссылка сброса пароля уйдёт не туда.
 
@@ -450,6 +463,7 @@ node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
 node scripts/flag-sybil-accounts.js --unflag    # снять пометки
 node scripts/check-secrets.js                   # проверка индекса git на секреты
+node scripts/demo-registration.js               # демо-прогон регистрации (локальная база)
 ```
 
 ---
@@ -473,5 +487,5 @@ src/                приложение (см. §4)
 tests/              node:test
 .env.example        шаблон окружения
 .githooks/          pre-commit: не пускает секреты в git
-CHANGELOG.md        что изменилось в 4.0 и почему
+CHANGELOG.md        что изменилось в 4.x и почему
 ```
