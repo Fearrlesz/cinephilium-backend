@@ -1,0 +1,415 @@
+# Контекст проекта для следующего агента
+
+**Дата среза:** 29.10.2026  
+**Ветка:** `feature/p1-vibe-ratings`  
+**Репозиторий:** https://github.com/Fearrlesz/cinephilium-backend  
+**Фронтенд:** https://github.com/Fearrlesz/cinephilium-frontend
+
+Этот файл — не changelog и не README. Это рабочая карта: что за проект, как он устроен,
+что уже сделано в P1/B1, какие решения зафиксированы и что нельзя сломать. Если ты
+пришёл сюда без контекста — читай сверху вниз, затем README и CHANGELOG.
+
+---
+
+## 1. Что это за проект
+
+**Cinephilium** — сайт, где фильмы оценивают не одной цифрой, а 15 критериями в 5 блоках
+плюс субъективный «вайб». Из критериев считается `technicalScore` (10–100), из него и
+вайба — `combinedScore` (10–100).
+
+- Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
+- Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
+- Прод: Render (API), MongoDB Atlas, Vercel (фронт).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.0).
+
+### Ключевые продуктовые правила
+
+- Регистрация только по инвайт-коду (режим `invite`), без почты и SMTP.
+- Оценки, рецензии и комментарии привязаны к пользователю; рецензии/комментарии
+  проходят модерацию (`pending` → `approved` / `rejected`).
+- Есть анти-накрутка: IP-лимиты, `weight` голоса, детектор ферм.
+- Геймификация: баллы, достижения, топ пользователей.
+
+---
+
+## 2. Текущее состояние (что уже произошло)
+
+1. **P1/B1 — двухступенчатая оценка — реализован в этой ветке.**
+   - vibe-оценка (одна цифра) → позже апгрейд до полной (15 критериев) на той же записи.
+2. **Миграция P1 применена на проде 29.10.2026 (успешно).**
+   - Старым `Rating` проставлен `completeness: 'full'`.
+   - Всем `User` проставлен `counters.vibes: 0` (если поля не было).
+   - Повторно запускать не нужно; скрипт идемпотентен, но смысла нет.
+3. **Фронтенд ещё не обновлён под vibe/full.** Это следующая задача (F1).
+4. **Агрегаты фильмов (средние, топ, `votesCount`) ещё не обновлены под B1.**
+   Это B2. До B2 vibe-оценки с `technicalScore = 0` попадают в `$avg` и занижают средние.
+5. **Старые 112 тестов + 14 новых = 126, все зелёные** (см. §8).
+
+> Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
+> достаточно `countDocuments` из §7.
+
+---
+
+## 3. Стек и запуск
+
+| Слой | Что используется |
+|---|---|
+| Runtime | Node.js >= 20.19 |
+| HTTP | Express 5.3 |
+| БД | MongoDB + Mongoose 9 |
+| Авторизация | JWT HS256: access 15 мин + refresh 30 дней в HttpOnly cookie |
+| Пароли | bcryptjs |
+| Валидация | express-validator + ручные проверки |
+| Безопасность | helmet, express-rate-limit, NoSQL-санитайзер, CORS |
+| Сжатие | `compression` (gzip JSON) |
+| Внешние API | TMDB (поиск/импорт), прокси постеров |
+| Тесты | `node:test`; B1-тесты — `mongodb-memory-server` |
+
+Локальный запуск:
+
+```bash
+npm ci
+cp .env.example .env      # заполнить секреты
+npm start                 # http://localhost:3000/api/health
+npm test                  # нужен MongoDB на 127.0.0.1:27017
+npm run test:vibe         # только B1, поднимает in-memory MongoDB
+```
+
+Обязательные env: `MONGODB_URI`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`,
+`TMDB_API_KEY`, `ADMIN_SECRET_KEY`. Полный список — `.env.example`.
+
+Деплой: Render, Build `npm ci --omit=dev` (иначе поставится dev-зависимость
+`mongodb-memory-server`), Start `npm start`. Env для прода: `NODE_ENV=production`,
+`COOKIE_SECURE=true`, `CORS_ORIGIN=https://<фронт>`, `CLIENT_URL=https://<фронт>`.
+
+---
+
+## 4. Архитектура бэкенда
+
+```
+src/server.js          env → Mongo.connect → app.listen, при ошибке exit 1
+src/app.js             сборка Express
+src/config/            env.js, cors.js, scoring.js
+src/middleware/        auth.js, security.js, errorHandler.js, validate.js
+src/models/            User, Invite, ContactRequest, Film, Rating, Review, Comment,
+                       Event, Action, Session
+src/routes/            auth, films, comments, reviews, ratings, users, admin,
+                       tmdb, events, top, contact
+src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements,
+                       validate, helpers, points, telegram, counterMaintenance,
+                       asyncHandler
+api/tmdb-image.js      прокси постеров (Express + Vercel)
+scripts/               миграции и обслуживание
+tests/                 node:test
+```
+
+Порядок middleware в `src/app.js` (важен):
+
+1. `cors` — до всего;
+2. `helmet`;
+3. `compression` — gzip JSON, картинки не трогает;
+4. прокси постеров `/api/tmdb-image` и алиас `/api/poster/:size/*` — до общего лимита,
+   со своим `imageLimiter` (1200/мин);
+5. `globalLimiter` (200/мин на IP);
+6. `express.json({ limit: '100kb' })`;
+7. `cookieParser()`;
+8. `noSqlSanitizer` — после парсинга;
+9. роуты;
+10. health (`/api/health`) и корень `/`;
+11. `notFoundHandler` → `errorHandler`.
+
+`app.set('trust proxy', 1)`; лимиты считают IP через `clientIp()`:
+`cf-connecting-ip` → `x-real-ip` → `req.ip`.
+
+### Формат ошибок
+
+`{ "error": { "code", "message", "details?" } }`. Исключение — прокси постеров:
+`{ "error": "строка" }`.
+
+---
+
+## 5. Модель данных (самое важное)
+
+### User
+
+- `nickname` (unique), `password` (bcrypt), `email` (optional, legacy), `telegram`,
+  `avatar`, `isAdmin`, `invitedBy`, `passwordReset`, `totalPoints`,
+  `counters`, `achievements`, `consent`, `registeredIp`, `trustWeight`, `flagged`,
+  `vibeWindow` (служебное, `select: false`).
+- `counters`: `ratings`, `vibes`, `reviews`, `reviewsApproved`, `comments`,
+  `commentsApproved`, `filmLikes`, `watchlist`, `followers`, `following`, `likesReceived`.
+- `counters.ratings` — **только полные** оценки; `counters.vibes` — **только текущие**
+  vibe-оценки (при апгрейде уменьшается).
+
+### Rating (главный объект P1)
+
+| Поле | Смысл |
+|---|---|
+| `userId`, `filmId` | пара уникальна (`{userId, filmId}` unique) |
+| `completeness` | `'vibe'` или `'full'`, default `'full'` |
+| `vibe` | 1..10, обязателен всегда |
+| `scores` | 15 критериев; у vibe отсутствует |
+| `genrePreset`, `blockWeights` | только у full |
+| `technicalScore`, `combinedScore` | 10..100 у full; `0` у vibe |
+| `textReview` | короткий текст к оценке (<=2000), только full |
+| `weight` | 0..1, анти-накрутка |
+| `ip` | IP последнего сохранения |
+| `vibeCreatedAt` | когда создана vibe (для капа), `select: false` |
+
+Правила:
+
+- `completeness: 'vibe'`: `technicalScore = 0`, `combinedScore = 0`, `scores` нет.
+- `completeness: 'full'`: 15 критериев + vibe, баллы 10–100.
+- Одна запись на пару user+film; апгрейд не создаёт новую.
+- `weight` при апгрейде берётся из существующей записи (включая `0`),
+  `ip` — текущий, `createdAt` не меняется.
+- Даунгрейда нет.
+
+### Остальные коллекции
+
+- `Invite`: `codeHash` (SHA-256), `codePrefix`, `note`, `createdBy`, `usedBy`,
+  `usedAt`, `revokedAt`, `expiresAt`.
+- `Film`: `tmdbId`, `title`, `year`, `posterPath`, `poster` (legacy), `description`,
+  `genres`, `director`, `actors`, `trailer`, `createdBy`.
+- `Review`: `text` 350..15000, `ratingId` — своя оценка **того же** фильма.
+- `Comment`: `text` <=1000, `parentId` — один уровень ответов.
+- `Event`: типы `rating`, `vibe`, `review`, `comment`, `film_add`, `achievement`.
+- `Action`: типы `rating`, `review`, `comment`, `like`, `import`, `admin_bonus`.
+- `Session`: `tokenHash`, TTL по `expiresAt`.
+
+---
+
+## 6. P1/B1: как работает двухступенчатая оценка
+
+### API
+
+`POST /api/ratings`:
+
+**Vibe (лайт):**
+
+```json
+{ "filmId": "...", "vibe": 8 }
+```
+
+→ `201`, в ответе `completeness: "vibe"`, `technicalScore: 0`, `combinedScore: 0`,
+`scores: null`, `blockWeights: null`, `genrePreset: null`.
+
+**Full (как раньше):**
+
+```json
+{
+  "filmId": "...",
+  "scores": { "scenario": { "plot": 8, "ideas": 8, "dialogue": 8 }, "...": "..." },
+  "vibe": 8,
+  "genrePreset": "drama",
+  "blockWeights": [25, 20, 20, 15, 20],
+  "textReview": "…"
+}
+```
+
+→ `201`, `completeness: "full"`, баллы 10–100.
+
+**Апгрейд vibe → full:** тот же payload, что full; `_id`/`createdAt` те же,
+`completeness` становится `'full'`. Если `vibe` не передан — берётся старый.
+
+**Ошибки:**
+
+- `400 ALREADY_FULL_RATING` — vibe-запрос к уже полной оценке.
+- `429 VIBE_LIMIT_REACHED` — больше 50 новых vibe за 24 часа;
+  `details: { limit: 50, window: '24h', retryAt: ISO }`.
+- `400 VALIDATION_ERROR` — неполный full, лишние поля в лайт-запросе и т.п.
+
+### Зафиксированные решения (ищи `// DECISION` в коде)
+
+- **1A** — даунгрейда нет. Full → vibe нельзя; админского пути тоже нет.
+- **2A** — «не вычислено» = `0`, `min: 0`; валидные баллы 10–100.
+- **3A** — `vibe` можно изменить при апгрейде; если не пришёл — старый.
+- **4C+** — геймификация ниже.
+- **5A** — лайт строгий: только `filmId` + `vibe`; `scores`/`textReview`/веса
+  без полных 15 критериев → 400.
+- **6A** — `completeness` отдаётся везде, где API возвращает рейтинг.
+
+### Кап 50/24ч
+
+- Скользящее окно хранится в `User.vibeWindow` (массив дат, `select: false`).
+- Проверка + занятие слота — одна атомарная pipeline-операция
+  `User.collection.findOneAndUpdate`: отфильтровать старые даты, проверить размер,
+  добавить новую. Mongo сериализует обновления одного документа.
+- Кап действует только на **создание** vibe. Повторная правка vibe слот не тратит.
+  Апгрейд капом не ограничен.
+- Слот занимается до вставки `Rating`. Если вставка упадёт по редкой ошибке БД,
+  слот останется израсходованным — транзакций в проекте нет, это сознательный компромисс.
+- `Rating.vibeCreatedAt` нужен, чтобы считать созданные vibe, даже если их потом
+  апгрейднули; наружу не отдаётся.
+
+### Начисления
+
+| Действие | Баллы | counters | Событие | Достижения |
+|---|---|---|---|---|
+| Новая vibe | +2 | `vibes +1` | `vibe` (`score: null`) | не пересчитываются |
+| Апгрейд vibe → full | +8 (итого 10) | `ratings +1`, `vibes −1` | `rating` | `updateAchievements` |
+| Новая full сразу | +10 (+20 админу) | `ratings +1` | `rating` | `updateAchievements` |
+| Повторная full / vibe | 0 | 0 | нет | нет |
+
+На апгрейде достижения считаются **до** `vibes −1`, иначе `FIRST_VIBE` не выдался бы
+тем, кто сразу апгрейдится.
+
+### Достижения
+
+- `effective = counters.ratings + counters.vibes / 5`.
+- Пороги: 20 / 50 / 100 / 200 (`RATING_20`, `RATING_50`, `RATING_100`, `RATING_200`).
+- `FIRST_RATING` («Первый шаг») — только за первую полную.
+- `FIRST_VIBE` («💭 Первое впечатление») — за первую vibe.
+- `FIRST_FRAME` («Первый кадр») — первые 100 зарегистрированных **и** `ratings >= 1`.
+- Уже выданные достижения не отбираются: `updateAchievements` только добавляет.
+- UI-строки старых ачивок не менялись; `FIRST_RATING` остался «Первый шаг»
+  (фронт может показать «Первый глубокий шаг» — это его дело).
+
+---
+
+## 7. Миграция P1 (уже выполнена)
+
+Скрипт: `scripts/migrate-p1-vibe-ratings.js`.
+
+Что делает:
+
+- `Rating` без `completeness` (или `null`) → `'full'`.
+- `User` без `counters.vibes` (или `null`) → `0`.
+- Идемпотентно; `--dry-run` только считает.
+
+На проде выполнено 29.10.2026. Контрольные запросы (должны быть нули):
+
+```bash
+mongosh "$MONGODB_URI" --quiet --eval 'db.ratings.countDocuments({ completeness: { $exists: false } })'
+mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes": { $exists: false } })'
+```
+
+Если когда-нибудь понадобится повторить (например, восстановление из старого бэкапа) —
+порядок: бэкап → `--dry-run` → боевой прогон → повторный `--dry-run` (нули) → проверка
+`mongosh` → деплой. Подробности и ожидаемый вывод — README §11.
+
+---
+
+## 8. Тесты
+
+- Всего **126**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js`.
+- `tests/vibe-rating.test.js` использует `mongodb-memory-server` — внешняя Mongo не нужна:
+
+  ```bash
+  npm run test:vibe    # 14/14
+  ```
+
+- Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
+
+  ```bash
+  npm test
+  ```
+
+  В среде без Mongo их можно прогнать, подняв `mongodb-memory-server` на порту 27017
+  и запустив `node --test tests/<file>.test.js`. Важно: для каждого прогона бери
+  **свежий `dbPath`** — иначе остатки старой БД ломают auth-тесты (bootstrap-режим
+  и инвайты). В этой сессии так и было: 112/112 на чистой in-memory базе.
+
+- Что покрыто B1-тестами: лайт, full, повторный лайт, апгрейд (id/createdAt/weight/ip),
+  апгрейд без vibe, запрет даунгрейда, строгий лайт, кап 50/24ч (49/50, скользящее окно),
+  достижения, `completeness` во всех выдачах, отсутствие утечки `vibeWindow`/
+  `vibeCreatedAt`, повторная full без двойных баллов, миграция.
+
+- Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
+  `completeness`-фильтры.
+
+---
+
+## 9. Анти-накрутка и модерация (не сломать)
+
+- Регистрация: 10/час с IP + одноразовый инвайт.
+- Оценки: 40/час с IP; одна пара user+film.
+- Vibe: 50/24ч на пользователя.
+- `weight` — из `User.trustWeight` при создании; при апгрейде **сохраняется**
+  из существующей записи.
+- Агрегаты фильмов (`$lookup`) фильтруют `weight: { $ne: 0 }`.
+- Списки `/films/:id/ratings` и `/films/:id/users` тоже фильтруют `weight: 0`.
+- `/api/top/users` исключает `flagged: true`.
+- Детектор: `scripts/flag-sybil-accounts.js`.
+- Рецензии/комментарии: `pending`; публично — `approved`; автор видит свой pending
+  в карточке фильма, админ — всё.
+
+---
+
+## 10. Что дальше (roadmap)
+
+### B2 — агрегаты (следующая задача)
+
+Сейчас `$avg` по `technicalScore`/`combinedScore` включает vibe-оценки с нулями.
+Нужно решить/сделать:
+
+- средние и топ считать только по `completeness: 'full'` (или иначе, но осознанно);
+- `votesCount` — решить, считать ли vibe;
+- карточки фильма, `/films`, `/films/top`, `/films/:id`, `/films/:id/ratings`,
+  `/films/:id/users`;
+- оценки в профиле/ленте не должны выглядеть как «0».
+
+### F1 — фронтенд
+
+- Лайт-форма: один слайдер vibe.
+- Полная форма: vibe предзаполнен из лайта.
+- Показывать «только vibe» и «полная», не рисовать 0 как балл.
+- Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
+  нужен нормальный текст/иконка.
+- README фронтенда/CHANGELOG обновить.
+
+### Прочее
+
+- «Слетели стили табов сортировки» — отдельный баг фронта, ещё не разбирали.
+- Админский апгрейд сейчас даёт +8 (как в спецификации P1), а новая full — +20.
+  Если для админов нужно +16 — это отдельное решение.
+- Нет удаления оценок/рецензий; награды не откатываются.
+
+---
+
+## 11. Соглашения и правила работы
+
+- Код — CommonJS (`require`), без TypeScript.
+- Ошибки — через `AppError`/`ValidationError`/`NotFoundError` и т.п., формат
+  `{ error: { code, message, details? } }`.
+- Комментарии объясняют «почему», особенно анти-накрутку, гонки и cookie.
+- Продуктовые решения фиксируются `// DECISION: <вариант>, потому что <...>`.
+- Документация: README/CHANGELOG на русском; версия в шапке.
+- Тесты — до/вместе с кодом; новые поведения покрывать.
+- Не менять формулы `technicalScore`/`combinedScore` без отдельного решения.
+- Не трогать `weight`, `trustWeight`, `flag-sybil-accounts.js` без причины.
+- Секреты — только в `.env` (в git не попадают; pre-commit проверяет).
+- Ветки: `feature/...`; main не пушить напрямую без просьбы.
+
+---
+
+## 12. Карта файлов P1
+
+| Файл | Что важно |
+|---|---|
+| `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
+| `src/models/User.js` | `counters.vibes`, `vibeWindow` |
+| `src/models/Event.js` | тип `vibe` |
+| `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления |
+| `src/routes/films.routes.js` | `completeness` в `userRating` и списках |
+| `src/routes/users.routes.js` | `completeness` в профиле, прогресс с `vibes` |
+| `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
+| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe |
+| `src/utils/counters.js` | поле `vibes` в допустимых счётчиках |
+| `src/utils/helpers.js` | передача `counters` в достижения |
+| `scripts/migrate-p1-vibe-ratings.js` | миграция (выполнена) |
+| `tests/vibe-rating.test.js` | 14 тестов B1 |
+| `tests/counters.test.js` | обновлён под `vibes` |
+| `README.md`, `CHANGELOG.md` | документация 5.0 |
+
+---
+
+## 13. Быстрый чек-лист перед изменениями
+
+1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
+2. `npm run test:vibe` — 14/14 (без внешней Mongo).
+3. Если есть Mongo — `npm test` — 126/126; если нет — см. §8.
+4. Прочитать `// DECISION` в `Rating.js` и `ratings.routes.js`, чтобы не отменить
+   закрытые решения.
+5. Помнить: миграция уже на проде; агрегаты ещё «грязные» до B2; фронт ещё не знает
+   про vibe/full.
