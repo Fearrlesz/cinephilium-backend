@@ -36,6 +36,14 @@ const consentSchema = new mongoose.Schema({
   ip: String
 }, { _id: false });
 
+// DECISION: B-PRIVACY/H1 — флаги приватности живут в User.privacy.
+// D1: два независимых флага. hideProfile — скрыть страницу профиля,
+// hideFromFeed — не показывать события автора в общей ленте.
+const privacySchema = new mongoose.Schema({
+  hideProfile:  { type: Boolean, default: false },
+  hideFromFeed: { type: Boolean, default: false }
+}, { _id: false });
+
 const userSchema = new mongoose.Schema({
   // Вход идёт по никнейму: почта больше не нужна и не подтверждается.
   // Поле оставлено необязательным для старых аккаунтов и для связи с админом.
@@ -60,6 +68,7 @@ const userSchema = new mongoose.Schema({
   passwordReset:  { type: passwordResetSchema, default: null },
   totalPoints:    { type: Number, default: 0 },
   counters:       { type: countersSchema, default: () => ({}) },
+  privacy:        { type: privacySchema, default: () => ({}) },
   // DECISION: B5/3 — дневник по умолчанию открыт, но пользователь может его
   // закрыть. Закрытый дневник не отдаётся другим; счётчик «N просмотров» фильма
   // при этом остаётся агрегатным и продолжает считать все записи (см. роут фильма).

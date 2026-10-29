@@ -109,7 +109,13 @@ router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (r
       const authorPoints = authorIsAdmin ? 10 : 2;
 
       await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
-      await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
+      await createEvent('comment', {
+        userId: comment.userId._id,
+        nickname: comment.userId.nickname,
+        film: comment.filmId.title,
+        filmId: comment.filmId._id,
+        contentId: comment._id
+      });
       await updateAchievements(comment.userId._id);
     }
 
@@ -150,7 +156,13 @@ router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (re
       const authorPoints = authorIsAdmin ? 50 : 30;
 
       await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
-      await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
+      await createEvent('review', {
+        userId: review.userId._id,
+        nickname: review.userId.nickname,
+        film: review.filmId.title,
+        filmId: review.filmId._id,
+        contentId: review._id
+      });
       await updateAchievements(review.userId._id);
     }
 

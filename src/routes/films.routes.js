@@ -316,7 +316,12 @@ router.post('/import', writeLimiter, authenticate, [
 
     const points = req.isAdmin ? 5 : 2;
     await addPoints(req.userId, req.userId, 'import', points, film._id);
-    await createEvent('film_add', req.user.nickname, film.title, film._id);
+    await createEvent('film_add', {
+      userId: req.userId,
+      nickname: req.user.nickname,
+      film: film.title,
+      filmId: film._id
+    });
     await updateAchievements(req.userId);
 
     res.status(201).json({

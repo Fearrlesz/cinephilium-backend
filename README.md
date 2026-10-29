@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.4. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.5. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -228,7 +228,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), diaryPrivate, achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), privacy (hideProfile, hideFromFeed), diaryPrivate, achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
@@ -236,7 +236,8 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
-| `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
+| `events` | type, user, userId (автор, B-PRIVACY), film, filmId, score, contentId, metadata | `createdAt`, `{userId, createdAt}` |
+| `privacychangelogs` | userId, field (hideProfile/hideFromFeed), oldValue, newValue, changedAt, ip | TTL 180 дней, `{userId, changedAt}` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
 | `sessions` | userId, tokenHash*, userAgent, ip, expiresAt (TTL) | `tokenHash` unique, `userId` |
 
@@ -408,7 +409,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 |---|---|---|---|
 | POST | `/api/watches` | access | `{ filmId, watchedAt?, isRewatch?, tags? }` → `201` |
 | GET | `/api/watches/me` | access | свой дневник: `page`, `limit` (<=100) |
-| GET | `/api/watches/user/:userId` | — | публичный дневник; закрытый → `403 DIARY_PRIVATE` |
+| GET | `/api/watches/user/:userId` | — | публичный дневник; закрытый → `403 DIARY_PRIVATE`, скрытый профиль → `404 PROFILE_HIDDEN` |
+| GET | `/api/users/:id/watches` | — | то же, что `/api/watches/user/:id` (алиас для профиля) |
+| GET | `/api/watches/:filmId/count` | — | `{ filmId, count }` — «N просмотров», скрытых не фильтрует |
 | PATCH | `/api/watches/settings` | access | `{ private: true\|false }` |
 | DELETE | `/api/watches/:id` | access | удалить свою запись; чужая → 404 |
 
@@ -427,6 +430,32 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
   связать можно только явным `watchId` при создании оценки или рецензии (DECISION B5/2).
 - `GET /api/films/:id` отдаёт `watchesCount` — считает все записи, включая пользователей
   с `weight: 0` (DECISION B5/6).
+
+### Приватность профиля и ленты (B-PRIVACY)
+
+Два независимых флага: `hideProfile` — скрыть страницу профиля, `hideFromFeed` — не
+показывать события автора в общей ленте. Скрываются только личные разделы: дневник,
+оценки, достижения. Рецензии и комментарии остаются видимыми там, где опубликованы,
+и оценки скрытого продолжают участвовать в средних фильмов.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/users/me/privacy` | access | `{ hideProfile, hideFromFeed }` |
+| PUT | `/api/users/me/privacy` | access | partial update, лог только при фактическом изменении |
+
+Правила:
+
+- Скрытый профиль видят владелец, админ и в будущем «друзья» (`canViewProfile`).
+  Посторонний получает заглушку `200 { user: { id, nickname, avatar, isHidden: true } }`;
+  у `GET /api/users/nickname/:nickname` — та же заглушка без обёртки `user`.
+- `GET /api/users/:id/achievements` и `GET /api/users/:id/watches` при скрытом профиле
+  отдают `404 PROFILE_HIDDEN`: достижения и дневник — личные разделы, а не «страница».
+- `GET /api/events` исключает события авторов с `hideFromFeed`; фильтрация на чтении —
+  снял флаг, события вернулись.
+- `GET /api/top/users` исключает скрытые профили.
+- `POST /api/watches`, `DELETE /api/watches/:id`, `GET /api/watches/me` и
+  `GET /api/watches/:filmId/count` приватностью не гейтятся.
+- Лог изменений — коллекция `PrivacyChangeLog`, TTL 180 дней.
 
 ### Пользователи, топ, события, админ
 
@@ -465,12 +494,14 @@ npm run test:aggregates  # только B2, тоже со своей in-memory M
 npm run test:gating      # только B3, тоже со своей in-memory MongoDB
 npm run test:reviews     # только B4, тоже со своей in-memory MongoDB
 npm run test:watches     # только B5, тоже со своей in-memory MongoDB
+npm run test:privacy     # только B-PRIVACY, тоже со своей in-memory MongoDB
 ```
 
-193 теста на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+218 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
 14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
-15 в `review-gating.test.js` и 23 в `watch-diary.test.js` — эти пять сами поднимают
-in-memory MongoDB. У каждого файла своя БД, поэтому параллельный запуск безопасен.
+15 в `review-gating.test.js`, 23 в `watch-diary.test.js` и 25 в `privacy.test.js` — эти
+шесть сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому параллельный
+запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -486,6 +517,7 @@ in-memory MongoDB. У каждого файла своя БД, поэтому п
 | `tests/comment-gating.test.js` | 15 |
 | `tests/review-gating.test.js` | 15 |
 | `tests/watch-diary.test.js` | 23 |
+| `tests/privacy.test.js` | 25 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -498,6 +530,9 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 привязка оценки и рецензии, `watchesCount` с `weight: 0`, миграция.
 `review-gating.test.js`: `npm run test:reviews` — гейт рецензий, игнор `ratingId`,
 границы длины, `isSpoiler` во всех выдачах, полный текст в админ-очереди.
+`privacy.test.js`: `npm run test:privacy` — флаги и лог, TTL, заглушки скрытого профиля,
+права владельца/админа, 404 на достижения и дневник, публичный контент скрытого,
+агрегаты, лента, топ, `Event.userId` и обе миграции.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -627,6 +662,33 @@ node scripts/migrate-b5-watches.js --dry-run
 `migrate-counters.js` / `reconcile-counters.js` (он делает `$set: { counters }` целиком)
 затёр бы поле.
 
+### B-PRIVACY — приватность профиля и ленты
+
+Две миграции, обе идемпотентны и поддерживают `--dry-run`. Запускать **до деплоя**.
+
+```bash
+# 1. Флаги приватности всем пользователям.
+node scripts/add-privacy-fields.js --dry-run
+# ожидаемо: [add-privacy] dry-run: users без privacy=N, без hideProfile=N, без hideFromFeed=N
+node scripts/add-privacy-fields.js
+# ожидаемо: [add-privacy] обновлено users=N
+
+# 2. Автор события отдельным полем (Event.userId), матч по нику.
+node scripts/add-event-userid.js --dry-run
+# ожидаемо: [add-event-userid] dry-run: events без userId=N, сматчено=N, без пользователя=0
+node scripts/add-event-userid.js
+# ожидаемо: [add-event-userid] обновлено events=N
+```
+
+Правило по несматченным событиям: `0` — норма; ровно `1` — осиротевшее событие
+(удалённый пользователь) пропускается с логом; **больше `1` — стоп** с кодом 1 и без
+записи: это уже не одиночный случай, нужен разбор. Повторный прогон должен печатать
+`events без userId=0`.
+
+Почему это важно: без `Event.userId` старые события нельзя скрыть по `hideFromFeed`,
+а без `privacy` у пользователя поле читается как «всё открыто» — миграция делает
+состояние явным.
+
 ---
 
 ## 12. Деплой
@@ -680,6 +742,8 @@ node scripts/reconcile-counters.js        # сверка counters с докум�
 node scripts/migrate-posters.js           # poster -> posterPath
 node scripts/migrate-p1-vibe-ratings.js   # P1: completeness + counters.vibes
 node scripts/migrate-b5-watches.js        # B5: counters.watches + diaryPrivate
+node scripts/add-privacy-fields.js        # B-PRIVACY: privacy у всех
+node scripts/add-event-userid.js          # B-PRIVACY: Event.userId по нику
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)

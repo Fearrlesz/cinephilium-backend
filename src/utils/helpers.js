@@ -7,9 +7,41 @@ async function existsById(model, id) {
   return (await model.exists({ _id: id })) !== null;
 }
 
-async function createEvent(type, user, film, filmId, score = null, contentId = null, metadata = {}) {
+/**
+ * Создание события ленты.
+ *
+ * DECISION: B-PRIVACY/event-userid (вариант A) — событие обязано знать автора:
+ * без `userId` ленту нельзя отфильтровать по `privacy.hideFromFeed`. Параметры
+ * передаются объектом, чтобы пропущенный автор не подставился «по старой памяти»
+ * позиционно. `user` (ник) остаётся для отображения — это не связь.
+ */
+async function createEvent(type, {
+  userId,
+  nickname,
+  film,
+  filmId = null,
+  score = null,
+  contentId = null,
+  metadata = {}
+} = {}) {
+  if (!userId) {
+    // Событие без автора невозможно скрыть по приватности — лучше не создавать
+    // и громко сообщить в лог, чем тихо получить неуправляемую запись.
+    console.error(`[createEvent] пропущено событие "${type}": не передан userId`);
+    return;
+  }
+
   try {
-    await Event.create({ type, user, film: film || '', filmId, score, contentId, metadata });
+    await Event.create({
+      type,
+      userId,
+      user: nickname,
+      film: film || '',
+      filmId,
+      score,
+      contentId,
+      metadata
+    });
   } catch (error) {
     console.error('Ошибка создания события:', error);
   }
@@ -43,13 +75,12 @@ async function updateAchievements(userId) {
       await User.findByIdAndUpdate(userId, { achievements: updatedAchievements });
       console.log(`🎮 Пользователь ${user.nickname} получил новые достижения: ${newAchievements.join(', ')}`);
 
-      await createEvent(
-        'achievement',
-        user.nickname,
-        'Новое достижение!',
-        null, null, null,
-        { achievements: newAchievements }
-      );
+      await createEvent('achievement', {
+        userId: user._id,
+        nickname: user.nickname,
+        film: 'Новое достижение!',
+        metadata: { achievements: newAchievements }
+      });
     }
   } catch (error) {
     console.error('❌ Ошибка обновления достижений:', error);

@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.4).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.5).
 
 ### Ключевые продуктовые правила
 
@@ -78,7 +78,20 @@
      `watchesCount` на фильме считает все записи, включая `weight: 0` (B5/6).
    - Связь с оценкой/рецензией — только явный `watchId` (B5/2); автосоздания записи
      при оценке НЕТ (B5/8); события в ленту нет (B5/5).
-8. **193 теста, все зелёные** (см. §8).
+8. **B-PRIVACY — приватность профиля и ленты — реализован в этой ветке.**
+   - Два независимых флага: `User.privacy.hideProfile` и `hideFromFeed`.
+     Управление — `GET/PUT /api/users/me/privacy`, лог в `PrivacyChangeLog` (TTL 180 дней).
+   - Скрываются только личные разделы: дневник, оценки, достижения. Рецензии
+     и комментарии остаются видимыми (C2), оценки скрытого — в агрегатах (F1).
+   - `GET /api/users/:id` и `/nickname/:nickname` отдают заглушку
+     `{ id, nickname, avatar, isHidden: true }`; `/achievements` и `/:id/watches` — 404.
+   - `GET /api/events` фильтрует по `Event.userId` (вариант A), `GET /api/top/users`
+     исключает скрытых.
+   - Retro-fit B5: публичный дневник гейтится `canViewProfile` (404), но
+     `POST/DELETE`, `GET /api/watches/me` и `GET /api/watches/:filmId/count` — нет.
+   - Миграции: `scripts/add-privacy-fields.js` и `scripts/add-event-userid.js` —
+     **обе нужны** до деплоя.
+9. **218 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -169,8 +182,9 @@ tests/                 node:test
 
 - `nickname` (unique), `password` (bcrypt), `email` (optional, legacy), `telegram`,
   `avatar`, `isAdmin`, `invitedBy`, `passwordReset`, `totalPoints`,
-  `counters`, `achievements`, `consent`, `registeredIp`, `trustWeight`, `flagged`,
+  `counters`, `privacy`, `achievements`, `consent`, `registeredIp`, `trustWeight`, `flagged`,
   `diaryPrivate` (B5: закрытый дневник), `vibeWindow` (служебное, `select: false`).
+- `privacy` (B-PRIVACY): `hideProfile` и `hideFromFeed` — независимые флаги, default false.
 - `counters`: `ratings`, `vibes`, `reviews`, `reviewsApproved`, `comments`,
   `commentsApproved`, `filmLikes`, `watches`, `watchlist`, `followers`, `following`,
   `likesReceived`.
@@ -215,7 +229,12 @@ tests/                 node:test
   ссылки, ставятся только по явному `watchId` при создании оценки/рецензии).
   **Много записей на пару user+film** — это пересмотры, а не дубликаты.
 - `Comment`: `text` <=1000, `parentId` — один уровень ответов.
-- `Event`: типы `rating`, `vibe`, `review`, `comment`, `film_add`, `achievement`.
+- `Event`: типы `rating`, `vibe`, `review`, `comment`, `film_add`, `achievement`;
+  `userId` — автор (B-PRIVACY, вариант A), `user` — ник для отображения.
+  Создаётся **только** через `createEvent`: он требует `userId` и без него событие
+  не пишет. Прямых `Event.create` в роутах быть не должно.
+- `PrivacyChangeLog` (B-PRIVACY): `userId`, `field`, `oldValue`, `newValue`, `changedAt`, `ip`;
+  TTL 180 дней. Пишется только при фактическом изменении флага.
 - `Action`: типы `rating`, `review`, `comment`, `like`, `import`, `admin_bonus`.
 - `Session`: `tokenHash`, TTL по `expiresAt`.
 
@@ -334,10 +353,11 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **193**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **218**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
-  + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5).
-- Эти пять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
+  + 25 в `tests/privacy.test.js` (B-PRIVACY).
+- Эти шесть файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -345,6 +365,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:gating        # 15/15
   npm run test:reviews       # 15/15
   npm run test:watches       # 23/23
+  npm run test:privacy       # 25/25
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -385,6 +406,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   `isRewatch`, удаление своё/чужое, пагинация и сортировка, публичный и закрытый
   дневник, `watchesCount` с `weight: 0`, отсутствие события в ленте, привязка
   оценки и рецензии по `watchId`, отсутствие автосоздания записи, миграция.
+
+- Что покрыто B-PRIVACY-тестами (`privacy.test.js`): флаги и partial update, лог только
+  при изменении, TTL-индекс, заглушка профиля и `/nickname`, 404 на достижения и дневник,
+  права владельца/админа, публичный контент скрытого, участие в агрегатах, топ, лента,
+  `canViewProfile` unit, `Event.userId` через `createEvent`, обе миграции (включая стоп
+  при >1 несматченных), retro-fit дневника и счётчик без фильтра.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -452,6 +479,22 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 Следующему агенту важно: `watchesCount` на фильме **сознательно** считает записи
 пользователей с `weight: 0` (DECISION B5/6) — это не забытый фильтр.
 
+### B-PRIVACY — приватность профиля и ленты (сделано, retro-fit B5 выполнен)
+
+Два независимых флага `User.privacy`: `hideProfile` и `hideFromFeed`. Скрываются только
+личные разделы (дневник, оценки, достижения); рецензии и комментарии остаются видимыми,
+оценки скрытого участвуют в агрегатах. `canViewProfile(viewer, target)` в
+`src/utils/privacy.js` — с веткой-заглушкой под «друзей» (`// TODO: B-SOCIAL`), её же
+должен использовать будущий B6/watchlist.
+
+`Event.userId` (вариант A): `createEvent` требует `userId` и без него событие не пишет;
+лента фильтруется по `userId`, а не по нику. Миграции `add-privacy-fields` и
+`add-event-userid` — обе нужны до деплоя.
+
+Публичный дневник (B5) теперь гейтится: `GET /api/users/:id/watches` и
+`GET /api/watches/user/:id` при скрытом профиле отдают `404 PROFILE_HIDDEN`. Свои
+эндпоинты дневника и счётчик по фильму не гейтятся. Подробности — CHANGELOG 5.5.
+
 ### B6 — watchlist (следующая задача)
 
 Не реализовано. «Хочу посмотреть»: одна запись на пару user+film (в отличие от дневника),
@@ -483,6 +526,10 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   плашка «дневник закрыт» на `403 DIARY_PRIVATE`, «N просмотров» из `watchesCount`.
   При создании оценки/рецензии — опционально отправлять `watchId`, если человек пришёл
   из записи дневника.
+- Приватность (B-PRIVACY): тумблеры `hideProfile`/`hideFromFeed` через
+  `GET/PUT /api/users/me/privacy`; профиль рисует заглушку при `user.isHidden` (ник +
+  аватар + «профиль скрыт»); на `404 PROFILE_HIDDEN` у достижений/дневника и
+  `403 DIARY_PRIVATE` — свои состояния, а не пустой экран.
 - Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
   нужен нормальный текст/иконка.
 - README фронтенда/CHANGELOG обновить.
@@ -512,38 +559,46 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1, B2, B3, B4, B5
+## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY
 
 | Файл | Что важно |
 |---|---|
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
 | `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
 | `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
-| `src/models/User.js` | `counters.vibes`, `counters.watches`, `diaryPrivate`, `vibeWindow` |
-| `src/models/Event.js` | тип `vibe` (тип `watch` НЕ добавлялся — B5/5) |
+| `src/models/User.js` | `counters.vibes`, `counters.watches`, `privacy`, `diaryPrivate`, `vibeWindow` |
+| `src/models/Event.js` | `userId` автора (B-PRIVACY) + `{userId, createdAt}`; тип `watch` НЕ добавлялся (B5/5) |
+| `src/models/PrivacyChangeLog.js` | лог флагов, TTL 180 дней |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления; необязательный `watchId` (B5/2) |
 | `src/utils/filmAggregates.js` | B2: одна цепочка стадий на страницу, каталог и топ; `weight: { $ne: 0 }`, оси, три счётчика, `null` в списках |
 | `src/utils/ratingGate.js` | B3/B4: `hasRatingForFilm()`, `findRatingForFilm()`, middleware `requireRatingForFilm({ completeness, code, message, attachAs })` |
 | `src/utils/watchLink.js` | B5: `findOwnWatch()`, `setWatchLink()` — привязка по явному `watchId` |
+| `src/utils/privacy.js` | B-PRIVACY: `canViewProfile()` (ветка «друзья» — TODO B-SOCIAL), `privacyOf()`, `hiddenProfileStub()` |
+| `src/utils/diaryQuery.js` | общая выдача дневника для `/watches/me`, `/watches/user/:id`, `/users/:id/watches` |
 | `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`, `watchesCount`) |
-| `src/routes/watches.routes.js` | B5: создание/удаление/списки, приватность, `DIARY_PRIVATE` |
+| `src/routes/watches.routes.js` | B5: создание/удаление/списки, `DIARY_PRIVATE`, `/:filmId/count`, гейт скрытого профиля |
 | `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler`; необязательный `watchId` |
-| `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается |
-| `src/routes/users.routes.js` | `completeness` в профиле, `isSpoiler` в рецензиях, `diaryPrivate`; профиль/лента — вне B2 (5B) |
+| `src/routes/events.routes.js` | B-PRIVACY: фильтр `hideFromFeed` по `userId` |
+| `src/routes/top.routes.js` | B-PRIVACY: скрытые профили исключены |
+| `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается; события одобрения с `userId` |
+| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
 | `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe, `counters.watches` = Watch |
 | `src/utils/counters.js` | поля `vibes` и `watches` в допустимых счётчиках |
-| `src/utils/helpers.js` | передача `counters` в достижения |
+| `src/utils/helpers.js` | `createEvent(type, { userId, ... })` — без `userId` событие не пишется |
 | `scripts/migrate-p1-vibe-ratings.js` | миграция P1 (выполнена) |
 | `scripts/migrate-b5-watches.js` | миграция B5: `counters.watches` по факту + `diaryPrivate` |
+| `scripts/add-privacy-fields.js` | B-PRIVACY: `privacy` всем пользователям |
+| `scripts/add-event-userid.js` | B-PRIVACY: `Event.userId` по нику; >1 несматченных — стоп |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
 | `tests/review-gating.test.js` | 15 тестов B4 (in-memory MongoDB) |
 | `tests/watch-diary.test.js` | 23 теста B5 (in-memory MongoDB) |
+| `tests/privacy.test.js` | 25 тестов B-PRIVACY (in-memory MongoDB) |
 | `tests/counters.test.js` | `vibes`/`watches` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
-| `README.md`, `CHANGELOG.md` | документация 5.4 |
+| `README.md`, `CHANGELOG.md` | документация 5.5 |
 
 ---
 
@@ -552,13 +607,16 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
    `npm run test:gating` (15/15), `npm run test:reviews` (15/15) и
-   `npm run test:watches` (23/23) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 193/193; если нет — см. §8.
+   `npm run test:watches` (23/23) и `npm run test:privacy` (25/25) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 218/218; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`,
-   `admin.routes.js`, `Watch.js` и `watches.routes.js`, чтобы не отменить закрытые решения.
-5. Помнить: миграции P1 и B5 уже прошли; B2–B5 закрыты; фронт ещё не знает про vibe/full;
+   `admin.routes.js`, `Watch.js`, `watches.routes.js`, `privacy.js` и `users.routes.js`,
+   чтобы не отменить закрытые решения.
+5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-миграции выполняются при деплое;
+   B2–B5 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
    комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
    минимум рецензии 350 — решение заказчика, а не забытый порог;
-   `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6).
+   `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6);
+   событие создаётся только через `createEvent` с `userId`, иначе его не скрыть (B-PRIVACY).

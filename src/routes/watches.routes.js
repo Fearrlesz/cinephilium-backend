@@ -8,7 +8,8 @@ const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const { incCounter } = require('../utils/counters');
-const { withPosterUrl } = require('../utils/poster');
+const { canViewProfile, hiddenProfileStub } = require('../utils/privacy');
+const { listDiary, presentWatch } = require('../utils/diaryQuery');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
@@ -18,7 +19,6 @@ const router = express.Router();
 
 const MAX_TAGS = 10;
 const MAX_TAG_LENGTH = 30;
-const MAX_LIMIT = 100;
 
 // Нормализация тегов: trim, выкинуть пустые, схлопнуть дубли без учёта регистра,
 // сохранив первое написание. Превышение лимитов — 400, а не молчаливое обрезание:
@@ -73,20 +73,6 @@ function parseBoolean(value, field) {
   throw new ValidationError(`${field} должен быть true или false`);
 }
 
-function parsePaging(query = {}) {
-  const page  = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(query.limit, 10) || 20));
-  return { page, limit, skip: (page - 1) * limit };
-}
-
-function presentWatch(watch, req) {
-  const object = typeof watch.toObject === 'function' ? watch.toObject() : { ...watch };
-  if (object.filmId && typeof object.filmId === 'object' && object.filmId.title) {
-    object.filmId = withPosterUrl(object.filmId, req);
-  }
-  return object;
-}
-
 async function loadViewer(req) {
   let viewerId = null;
   let isAdmin = false;
@@ -106,6 +92,8 @@ async function loadViewer(req) {
 
 // POST /api/watches — отметить просмотр.
 // Не гейтится ничем: это самое дешёвое действие в системе, дешевле vibe.
+// DECISION: B-PRIVACY/retro-fit — приватность профиля на это не влияет: свой
+// дневник доступен владельцу всегда, флаги скрывают чужие глаза, а не свои руки.
 // DECISION: B5/8 — оценка НЕ создаёт запись дневника автоматически: дата
 // «сегодня» была бы ложью о реальном просмотре. Связь появляется только
 // по явному watchId при создании оценки/рецензии (B5/2).
@@ -136,59 +124,46 @@ router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next)
   res.status(201).json(presentWatch(watch, req));
 }));
 
-// GET /api/watches/me — свой дневник.
+// GET /api/watches/me — свой дневник. Приватность не гейтит (см. DECISION выше).
 router.get('/me', authenticate, asyncHandler(async (req, res, next) => {
-  const { page, limit, skip } = parsePaging(req.query);
-
-  const [items, total] = await Promise.all([
-    Watch.find({ userId: req.userId })
-      .populate('filmId', 'title poster posterPath year')
-      .sort({ watchedAt: -1, _id: -1 })
-      .skip(skip)
-      .limit(limit),
-    Watch.countDocuments({ userId: req.userId })
-  ]);
-
-  res.json({
-    items: items.map(watch => presentWatch(watch, req)),
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) }
-  });
+  const result = await listDiary(req.userId, req.query, req);
+  res.json(result);
 }));
 
-// GET /api/watches/user/:userId — публичный дневник.
-// DECISION: B5/3 — дневник открыт по умолчанию, но владелец может его закрыть.
-// Закрытый отдаётся только владельцу и админу; остальным — 403 DIARY_PRIVATE,
-// чтобы фронт показал «дневник закрыт», а не пустоту.
+// GET /api/watches/user/:userId — публичный дневник (алиас: GET /api/users/:id/watches).
+// DECISION: B-PRIVACY/retro-fit — сначала скрытый профиль (404, личный раздел),
+// потом настройка дневника (403 DIARY_PRIVATE). Закрытый дневник — не 404:
+// профиль виден, просто дневник убран, и фронт должен показать плашку.
 router.get('/user/:userId', validateObjectId('userId'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
-  const target = await User.findById(req.params.userId).select('diaryPrivate');
+  const target = await User.findById(req.params.userId).select('privacy diaryPrivate nickname avatar');
   if (!target) throw new NotFoundError('Пользователь не найден');
 
   const { viewerId, isAdmin } = await loadViewer(req);
-  const isOwner = Boolean(viewerId) && String(viewerId) === String(target._id);
+  const viewer = viewerId ? { userId: viewerId, isAdmin } : null;
 
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
+  const isOwner = Boolean(viewerId) && String(viewerId) === String(target._id);
   if (target.diaryPrivate && !isOwner && !isAdmin) {
     throw new AppError('DIARY_PRIVATE', 'Пользователь закрыл свой дневник', 403);
   }
 
-  const { page, limit, skip } = parsePaging(req.query);
-  const filter = { userId: target._id };
+  const result = await listDiary(target._id, req.query, req);
+  res.json({ ...result, private: target.diaryPrivate === true });
+}));
 
-  const [items, total] = await Promise.all([
-    Watch.find(filter)
-      .populate('filmId', 'title poster posterPath year')
-      .sort({ watchedAt: -1, _id: -1 })
-      .skip(skip)
-      .limit(limit),
-    Watch.countDocuments(filter)
-  ]);
+// GET /api/watches/:filmId/count — «N просмотров» фильма.
+// DECISION: B-PRIVACY/retro-fit — не фильтрует скрытых: это публичное число
+// по фильму, а не страница профиля (F1 — данные скрытых участвуют в публичном).
+router.get('/:filmId/count', validateObjectId('filmId'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
 
-  res.json({
-    items: items.map(watch => presentWatch(watch, req)),
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-    private: target.diaryPrivate === true
-  });
+  const count = await Watch.countDocuments({ filmId: req.params.filmId });
+  res.json({ filmId: req.params.filmId, count });
 }));
 
 // PATCH /api/watches/settings — открыть/закрыть дневник.
@@ -206,6 +181,8 @@ router.patch('/settings', authenticate, asyncHandler(async (req, res, next) => {
 // Чужую отдаём как 404, чтобы не подтверждать существование записи.
 // Каскада нет: удаление записи дневника не трогает связанную оценку/рецензию —
 // это разные сущности со своим жизненным циклом.
+// DECISION: B-PRIVACY/retro-fit — не гейтится приватностью: своё удаление
+// не должно зависеть от того, скрыт профиль или нет.
 router.delete('/:id', writeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 

@@ -209,15 +209,14 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
       await incCounter(req.userId, 'vibes', 1);
       await addPoints(req.userId, req.userId, 'rating', 2, rating._id);
 
-      await createEvent(
-        'vibe',
-        req.user?.nickname || 'Пользователь',
-        film.title,
-        film._id,
-        null,
-        rating._id,
-        { vibe, completeness: 'vibe' }
-      );
+      await createEvent('vibe', {
+        userId: req.userId,
+        nickname: req.user?.nickname || 'Пользователь',
+        film: film.title,
+        filmId: film._id,
+        contentId: rating._id,
+        metadata: { vibe, completeness: 'vibe' }
+      });
       // updateAchievements на vibe не вызывается — только на полной оценке.
 
       await linkWatch(rating._id);
@@ -339,19 +338,19 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
       const points = req.isAdmin ? 20 : 10;
       await addPoints(req.userId, req.userId, 'rating', points, rating._id);
 
-      await createEvent(
-        'rating',
-        req.user?.nickname || 'Пользователь',
-        film.title,
-        film._id,
-        rating.combinedScore,
-        rating._id,
-        {
+      await createEvent('rating', {
+        userId: req.userId,
+        nickname: req.user?.nickname || 'Пользователь',
+        film: film.title,
+        filmId: film._id,
+        score: rating.combinedScore,
+        contentId: rating._id,
+        metadata: {
           technicalScore: rating.technicalScore,
           combinedScore:  rating.combinedScore,
           vibe:           rating.vibe
         }
-      );
+      });
 
       await updateAchievements(req.userId);
     } else if (previousCompleteness === 'vibe') {
@@ -365,20 +364,20 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
       await incCounter(req.userId, 'vibes', -1);
       await addPoints(req.userId, req.userId, 'rating', 8, rating._id);
 
-      await createEvent(
-        'rating',
-        req.user?.nickname || 'Пользователь',
-        film.title,
-        film._id,
-        rating.combinedScore,
-        rating._id,
-        {
+      await createEvent('rating', {
+        userId: req.userId,
+        nickname: req.user?.nickname || 'Пользователь',
+        film: film.title,
+        filmId: film._id,
+        score: rating.combinedScore,
+        contentId: rating._id,
+        metadata: {
           technicalScore: rating.technicalScore,
           combinedScore:  rating.combinedScore,
           vibe:           rating.vibe,
           upgradedFrom:   'vibe'
         }
-      );
+      });
     }
 
     await linkWatch(rating._id);

@@ -11,7 +11,12 @@ router.get('/users', asyncHandler(async (req, res, next) => {
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
     // Помеченные фермы не должны светиться и в рейтинге пользователей.
-    const visibleFilter = { flagged: { $ne: true } };
+    // DECISION: B-PRIVACY — скрытый профиль (privacy.hideProfile) в топ не попадает:
+    // иначе ник и очки скрытого человека продолжали бы светиться в общем списке.
+    const visibleFilter = {
+      flagged: { $ne: true },
+      'privacy.hideProfile': { $ne: true }
+    };
     const total = await User.countDocuments(visibleFilter);
 
     const users = await User.aggregate([

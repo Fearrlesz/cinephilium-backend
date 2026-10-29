@@ -4,38 +4,56 @@ const User    = require('../models/User');
 const Rating  = require('../models/Rating');
 const Review  = require('../models/Review');
 const Comment = require('../models/Comment');
+const PrivacyChangeLog = require('../models/PrivacyChangeLog');
 const { authenticate } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { extractBearer } = require('../middleware/security');
+const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const { getUserAchievements } = require('../utils/achievements');
 const { withPosterUrl } = require('../utils/poster');
+const { HIDDEN_FIELDS, privacyOf, canViewProfile, hiddenProfileStub } = require('../utils/privacy');
+const { listDiary } = require('../utils/diaryQuery');
 
 const asyncHandler = require('../utils/asyncHandler');
-const { NotFoundError } = require('../utils/errors');
+const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
+
+/**
+ * Зритель из токена: `null` для анонима.
+ * @returns {Promise<{userId: string, isAdmin: boolean}|null>}
+ */
+async function resolveViewer(req) {
+  const token = extractBearer(req);
+  if (!token) return null;
+
+  try {
+    const decoded = verifyAccessToken(token);
+    const viewer = await User.findById(decoded.userId).select('isAdmin');
+    return { userId: decoded.userId, isAdmin: viewer?.isAdmin || false };
+  } catch {
+    return null;
+  }
+}
 
 async function sendProfile(req, res, userId) {
   const user = await User.findById(userId).select('-password');
   if (!user) throw new NotFoundError('Пользователь не найден');
 
-  let isOwnProfile = false;
-  let isAdmin = false;
-  const token = extractBearer(req);
-  if (token) {
-    try {
-      const decoded = verifyAccessToken(token);
-      // 🐛 ФИКС: приведение к строке для надёжного сравнения
-      isOwnProfile = String(decoded.userId) === String(userId);
-      if (!isOwnProfile) {
-        const viewer = await User.findById(decoded.userId).select('isAdmin');
-        isAdmin = viewer?.isAdmin || false;
-      }
-    } catch { /* игнор */ }
+  const viewer = await resolveViewer(req);
+
+  // DECISION: B-PRIVACY/A2 — при скрытом профиле посторонний видит только
+  // заглушку (E2): ник и аватар. Ни counters, ни достижений, ни оценок,
+  // ни дневника в ответе нет — это личные разделы. Рецензии и комментарии
+  // продолжают жить там, где опубликованы (C2).
+  if (!canViewProfile(viewer, user)) {
+    return res.json({ user: hiddenProfileStub(user) });
   }
+
+  const isOwnProfile = Boolean(viewer) && String(viewer.userId) === String(user._id);
+  const isAdmin = Boolean(viewer?.isAdmin);
 
   // Чужие черновики и отклонённые материалы не показываем: полный список
   // доступен только владельцу профиля и администратору.
@@ -140,14 +158,63 @@ router.get('/me/achievements', authenticate, asyncHandler(async (req, res) => {
   await sendAchievements(res, req.userId);
 }));
 
+// GET /api/users/me/privacy — текущее состояние флагов.
+router.get('/me/privacy', authenticate, asyncHandler(async (req, res) => {
+  const user = await User.findById(req.userId).select('privacy');
+  if (!user) throw new NotFoundError('Пользователь не найден');
+  res.json(privacyOf(user));
+}));
+
+// PUT /api/users/me/privacy — partial update { hideProfile?, hideFromFeed? }.
+// DECISION: B-PRIVACY/D1 — флаги независимы: непереданный остаётся как был.
+// DECISION: B-PRIVACY/G2 — лог пишется только при фактическом изменении значения.
+router.put('/me/privacy', authenticate, writeLimiter, asyncHandler(async (req, res) => {
+  const user = await User.findById(req.userId).select('privacy');
+  if (!user) throw new NotFoundError('Пользователь не найден');
+
+  const current = privacyOf(user);
+  const next = { ...current };
+
+  for (const field of HIDDEN_FIELDS) {
+    const value = req.body?.[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') {
+      throw new ValidationError(`${field} должен быть true или false`);
+    }
+    next[field] = value;
+  }
+
+  const changed = HIDDEN_FIELDS.filter(field => current[field] !== next[field]);
+
+  if (changed.length > 0) {
+    const set = {};
+    for (const field of changed) set[`privacy.${field}`] = next[field];
+    await User.updateOne({ _id: req.userId }, { $set: set });
+
+    await PrivacyChangeLog.insertMany(changed.map(field => ({
+      userId: req.userId,
+      field,
+      oldValue: current[field],
+      newValue: next[field],
+      ip: req.ip || ''
+    })));
+  }
+
+  res.json(next);
+}));
+
 // GET /api/users/nickname/:nickname — поиск профиля по никнейму (страница критика).
 // Отдаём компактный lookup: фронтенд использует его только чтобы получить _id.
 router.get('/nickname/:nickname', asyncHandler(async (req, res) => {
   const nickname = String(req.params.nickname || '').trim();
   if (!nickname) throw new NotFoundError('Пользователь не найден');
 
-  const found = await User.findOne({ nickname }).select('_id nickname avatar');
+  const found = await User.findOne({ nickname }).select('_id nickname avatar privacy');
   if (!found) throw new NotFoundError('Пользователь не найден');
+
+  const viewer = await resolveViewer(req);
+  // E2: скрытый профиль отдаёт только ник и аватар — их и так видно в рецензиях.
+  if (!canViewProfile(viewer, found)) return res.json(hiddenProfileStub(found));
 
   res.json({
     _id: found._id,
@@ -155,6 +222,25 @@ router.get('/nickname/:nickname', asyncHandler(async (req, res) => {
     nickname: found.nickname,
     avatar: found.avatar
   });
+}));
+
+// GET /api/users/:id/watches — публичный дневник пользователя (алиас B5-роута
+// GET /api/watches/user/:userId, см. DECISION B-PRIVACY/alias).
+// DECISION: B-PRIVACY/retro-fit — дневник относится к личным разделам (A2),
+// поэтому при скрытом профиле без прав отдаём 404, а не заглушку.
+router.get('/:id/watches', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const target = await User.findById(req.params.id).select('privacy diaryPrivate');
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  const viewer = await resolveViewer(req);
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
+  const result = await listDiary(target._id, req.query, req);
+  res.json({ ...result, private: target.diaryPrivate === true });
 }));
 
 // GET /api/users/:id
@@ -166,6 +252,15 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
 // GET /api/users/:id/achievements
 router.get('/:id/achievements', validateObjectId('id'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
+
+  const target = await User.findById(req.params.id).select('privacy');
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  const viewer = await resolveViewer(req);
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
   await sendAchievements(res, req.params.id);
 }));
 
