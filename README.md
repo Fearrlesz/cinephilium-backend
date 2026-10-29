@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.6. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.7. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -231,11 +231,12 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), privacy (hideProfile, hideFromFeed), diaryPrivate, achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
-| `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
+| `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy, likesCount (публичный агрегат, weight > 0) | `tmdbId` unique |
 | `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
 | `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
 | `watchlistitems` | userId, filmId, addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId}` |
+| `filmlikes` | userId, filmId, weight (снимок trustWeight), addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId, weight}` |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, userId (автор, B-PRIVACY), film, filmId, score, contentId, metadata | `createdAt`, `{userId, createdAt}` |
 | `privacychangelogs` | userId, field (hideProfile/hideFromFeed), oldValue, newValue, changedAt, ip | TTL 180 дней, `{userId, changedAt}` |
@@ -460,6 +461,32 @@ user+film (уникальный индекс), в отличие от дневн
 - `counters.watchlist` меняется при добавлении и удалении; в заглушке скрытого профиля
   счётчиков нет вообще.
 
+### Сердечко фильма (B7)
+
+Четвёртая ось: «мне нравится» — эмоция, а не суждение, независимая от оценки.
+Одна запись на пару user+film.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/films/:id/like` | access | поставить (идемпотентно) → `{ liked: true, likesCount }` |
+| DELETE | `/api/films/:id/like` | access | снять (идемпотентно) → `{ liked: false, likesCount }` |
+| GET | `/api/users/:id/likes` | — | публичные «Понравившиеся»; скрытый профиль без прав → `404 PROFILE_HIDDEN` |
+| GET | `/api/users/me/likes` | access | свои «Понравившиеся», без гейтинга |
+
+`GET /api/films/:id` отдаёт `liked` (анониму — `false`) и `likesCount`.
+
+**Два разных числа, не путать:**
+
+| Поле | Что считает | Вес |
+|---|---|---|
+| `Film.likesCount` | сердечки у фильма (публичный агрегат) | только `weight > 0` |
+| `User.counters.filmLikes` | сколько лайков поставил человек | все, включая `weight: 0` |
+
+`POST` и `DELETE` — не toggle: повторный `POST` оставляет лайк, повторный `DELETE`
+убирает. Так два одновременных запроса дают одно состояние и один счётчик
+(DECISION B7/1A). Лимит — 200 запросов в час на IP. Событие в ленту не создаётся,
+достижения не меняются, `Film.likesCount` скрытого пользователя учитывается.
+
 ### Приватность профиля и ленты (B-PRIVACY)
 
 Два независимых флага: `hideProfile` — скрыть страницу профиля, `hideFromFeed` — не
@@ -525,13 +552,14 @@ npm run test:reviews     # только B4, тоже со своей in-memory M
 npm run test:watches     # только B5, тоже со своей in-memory MongoDB
 npm run test:privacy     # только B-PRIVACY, тоже со своей in-memory MongoDB
 npm run test:watchlist   # только B6, тоже со своей in-memory MongoDB
+npm run test:likes       # только B7, тоже со своей in-memory MongoDB
 ```
 
-235 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+254 теста на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
 14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
-15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`
-и 17 в `watchlist.test.js` — эти семь сами поднимают in-memory MongoDB. У каждого файла
-своя БД, поэтому параллельный запуск безопасен.
+15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`,
+17 в `watchlist.test.js` и 19 в `film-likes.test.js` — эти восемь сами поднимают
+in-memory MongoDB. У каждого файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -549,6 +577,7 @@ npm run test:watchlist   # только B6, тоже со своей in-memory M
 | `tests/watch-diary.test.js` | 23 |
 | `tests/privacy.test.js` | 25 |
 | `tests/watchlist.test.js` | 17 |
+| `tests/film-likes.test.js` | 19 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -567,6 +596,10 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 `watchlist.test.js`: `npm run test:watchlist` — добавление/повтор/удаление и
 идемпотентность, чужое удаление, `check`, пагинация с `posterUrl`, приватность,
 независимость от достижений, событий и дневника, лимит 201-го запроса, миграция.
+`film-likes.test.js`: `npm run test:likes` — два разных счётчика, идемпотентные
+`POST`/`DELETE` (включая двойные одновременные), `liked` в карточке фильма,
+списки и приватность, `weight: 0`, пометка и снятие пометки фермы, лимит,
+сверка и миграция.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -737,6 +770,28 @@ node scripts/add-watchlist-counters.js
 `обновлено users=0`. Важно: `counters.watchlist` считает и `counterMaintenance.js`
 (он делает `$set: { counters }` целиком) — без этого reconcile обнулил бы поле.
 
+### B7 — сердечки
+
+```bash
+# 1. Поля: Film.likesCount и User.counters.filmLikes.
+node scripts/add-film-likes-fields.js --dry-run
+# ожидаемо: [add-film-likes] dry-run: films без likesCount=N, users без counters.filmLikes=N
+node scripts/add-film-likes-fields.js
+# ожидаемо: [add-film-likes] обновлено: films=N, users=N
+
+# 2. Сверка публичного счётчика с фактическими лайками (weight > 0).
+node scripts/reconcile-film-likes.js --dry-run
+# ожидаемо: [reconcile-film-likes] dry-run: films=N, расхождений=0
+node scripts/reconcile-film-likes.js
+# ожидаемо: [reconcile-film-likes] apply: films=N, расхождений=0, исправлено=0
+```
+
+Коллекция `filmlikes` новая — переносить нечего. После первого прогона
+`reconcile-film-likes` должен показывать `расхождений=0`; если нет — значит
+`flag-sybil-accounts.js` когда-то пометил ферму на старом коде, и счётчик надо
+долечить этим же скриптом (он идемпотентен). `counters.filmLikes` считает и
+`counterMaintenance.js` — иначе `$set: { counters }` обнулил бы его.
+
 ---
 
 ## 12. Деплой
@@ -793,6 +848,8 @@ node scripts/migrate-b5-watches.js        # B5: counters.watches + diaryPrivate
 node scripts/add-privacy-fields.js        # B-PRIVACY: privacy у всех
 node scripts/add-event-userid.js          # B-PRIVACY: Event.userId по нику
 node scripts/add-watchlist-counters.js    # B6: counters.watchlist по факту
+node scripts/add-film-likes-fields.js     # B7: Film.likesCount + counters.filmLikes
+node scripts/reconcile-film-likes.js      # B7: сверка публичного счётчика лайков
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)

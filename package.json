@@ -12,6 +12,7 @@
     "test:watches": "node --test tests/watch-diary.test.js",
     "test:privacy": "node --test tests/privacy.test.js",
     "test:watchlist": "node --test tests/watchlist.test.js",
+    "test:likes": "node --test tests/film-likes.test.js",
     "hooks:install": "git config core.hooksPath .githooks",
     "invite:new": "node scripts/new-invite.js"
   },

@@ -15,6 +15,7 @@ const { withPosterUrl } = require('../utils/poster');
 const { HIDDEN_FIELDS, privacyOf, canViewProfile, hiddenProfileStub } = require('../utils/privacy');
 const { listDiary } = require('../utils/diaryQuery');
 const { listWatchlist } = require('../utils/watchlistQuery');
+const { listLikes } = require('../utils/filmLikesQuery');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
@@ -204,6 +205,14 @@ router.put('/me/privacy', authenticate, writeLimiter, asyncHandler(async (req, r
   res.json(next);
 }));
 
+// GET /api/users/me/likes — свой список «Понравившихся».
+// DECISION: B7/not-gated — всегда доступен владельцу, приватность профиля его
+// не гейтит: скрывается чужой взгляд, а не свой список.
+// Объявлен ДО /:id/likes, иначе "me" попадёт в :id и не пройдёт валидацию ObjectId.
+router.get('/me/likes', authenticate, asyncHandler(async (req, res) => {
+  res.json(await listLikes(req.userId, req.query, req));
+}));
+
 // GET /api/users/nickname/:nickname — поиск профиля по никнейму (страница критика).
 // Отдаём компактный lookup: фронтенд использует его только чтобы получить _id.
 router.get('/nickname/:nickname', asyncHandler(async (req, res) => {
@@ -261,6 +270,24 @@ router.get('/:id/watchlist', validateObjectId('id'), asyncHandler(async (req, re
   }
 
   res.json(await listWatchlist(target._id, req.query, req));
+}));
+
+// GET /api/users/:id/likes — публичный список «Понравившихся».
+// DECISION: B7/6=404 — при скрытом профиле и зрителе без прав 404, как дневник
+// (B-PRIVACY/retro-fit) и watchlist (B6/4=404): «Понравившиеся» — личный раздел.
+// Проверка через canViewProfile, без копии логики; ветка «друзья» появится там же.
+router.get('/:id/likes', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const target = await User.findById(req.params.id).select('privacy');
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  const viewer = await resolveViewer(req);
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
+  res.json(await listLikes(target._id, req.query, req));
 }));
 
 // GET /api/users/:id

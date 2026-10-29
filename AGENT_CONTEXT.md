@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.6).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.7).
 
 ### Ключевые продуктовые правила
 
@@ -103,7 +103,20 @@
    - Лимитер `watchlistLimiter`: 200/час **на аккаунт** (ключ `userId`, после authenticate).
    - `counters.watchlist` считается в `counterMaintenance` (иначе reconcile обнулит!).
    - Миграция `scripts/add-watchlist-counters.js` — нужна до деплоя.
-10. **235 тестов, все зелёные** (см. §8).
+10. **B7 — сердечко фильма — реализован в этой ветке.**
+   - Коллекция `filmlike`: **одна** запись на пару user+film, `weight` — снимок
+     `trustWeight` на момент лайка (тот же паттерн, что `Rating.weight`).
+   - `POST /api/films/:id/like` = «поставить», `DELETE` = «снять»; оба идемпотентны.
+     Это не toggle: иначе два одновременных `POST` давали бы разный результат в
+     зависимости от планировщика (см. DECISION B7/1A).
+   - **Два разных числа:** `Film.likesCount` (публичный агрегат, только `weight > 0`)
+     и `User.counters.filmLikes` (личный счётчик, включая `weight: 0`). Не путать.
+   - `GET /api/users/:id/likes` гейтится `canViewProfile` → 404; `/me/likes` — нет.
+   - `likeLimiter`: 200/час на IP; событие не создаётся; достижения не затрагиваются.
+   - `flag-sybil-accounts.js` теперь трогает 4 места и **пересчитывает** `likesCount`
+     затронутых фильмов (не инкремент) — идемпотентно.
+   - Миграции `add-film-likes-fields` и `reconcile-film-likes` — до деплоя.
+11. **254 теста, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -250,6 +263,10 @@ tests/                 node:test
 - `WatchlistItem` (B6): `userId`, `filmId`, `addedAt`; **одна** запись на пару
   user+film (`{userId, filmId}` unique). Это состояние, а не история: «пересмотров»
   в watchlist не бывает.
+- `FilmLike` (B7): `userId`, `filmId`, `weight` (снимок `trustWeight`), `addedAt`;
+  **одна** запись на пару (`unique`). `Film.likesCount` — публичный агрегат по
+  `weight > 0`; `User.counters.filmLikes` — личный счётчик по всем лайкам. Это разные
+  числа, путать нельзя.
 - `Action`: типы `rating`, `review`, `comment`, `like`, `import`, `admin_bonus`.
 - `Session`: `tokenHash`, TTL по `expiresAt`.
 
@@ -368,11 +385,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **235**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **254**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
-  + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6).
-- Эти семь файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
+  + 19 в `tests/film-likes.test.js` (B7).
+- Эти восемь файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -382,6 +400,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:watches       # 23/23
   npm run test:privacy       # 25/25
   npm run test:watchlist     # 17/17
+  npm run test:likes         # 19/19
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -434,6 +453,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   публичный список при открытом и скрытом профиле (404/владелец/админ),
   независимость от достижений, событий и создания `Watch`, лимит 201-го запроса
   (с ротацией IP — доказывает, что ключ на аккаунт), миграция.
+
+- Что покрыто B7-тестами (`film-likes.test.js`): два разных счётчика (фильм 2 —
+  у каждого в профиле 1), идемпотентные `POST`/`DELETE` и их двойные одновременные
+  вызовы, `liked` в карточке фильма для анонима и авторизованного, списки и
+  приватность (404/владелец/админ), `weight: 0`, пометка и снятие пометки фермы,
+  отсутствие события и влияния на достижения, лимит 201-го запроса, сверка и миграция.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -525,13 +550,26 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 Не влияет на достижения и не создаёт события; создание `Watch` фильм не убирает (3B).
 Лимит добавлений — 200/час на аккаунт. Подробности — CHANGELOG 5.6.
 
-### B7 — лайк фильма (следующая задача)
+### B7 — лайк фильма (сделано)
 
-Не реализовано. Две развилки, которые надо закрыть: (а) гонка двойного лайка —
-идемпотентный toggle или 409; (б) участвуют ли лайки пользователей с `weight: 0`
-в публичном счётчике. `counters.filmLikes` сейчас в `unsupportedCounters` как
-всегда-ноль — при реализации обязательно убрать оттуда и научить
-`counterMaintenance` считать (иначе reconcile обнулит, как было с `watchlist` в B6).
+Коллекция `filmlike`, одна запись на пару user+film. `POST` = «поставить»,
+`DELETE` = «снять», оба идемпотентны — это **не** toggle (DECISION B7/1A: иначе
+два одновременных POST дают разный результат в зависимости от планировщика).
+`counters.filmLikes` убран из `unsupportedCounters` и считается по `FilmLike`.
+`flag-sybil-accounts.js` трогает четыре места и пересчитывает `likesCount`
+затронутых фильмов. Списки: `/api/users/:id/likes` (canViewProfile → 404) и
+`/api/users/me/likes`. Лимит — 200/час на IP. Подробности — CHANGELOG 5.7.
+
+Следующему агенту важно: `Film.likesCount` (публичный, только `weight > 0`) и
+`User.counters.filmLikes` (личный, все лайки) — **разные числа**. Тест, где у одного
+из двух пользователей `filmLikes: 2`, означал бы баг.
+
+### B8 — полиморфные комментарии к рецензиям (следующая задача)
+
+Не реализовано. Самая сложная итерация: меняет схему `Comment` (полиморфизм
+`targetType`), требует миграции и встраивает `canViewProfile` для комментариев
+к рецензиям скрытых авторов. Гейтинг B3 (комментарий требует оценки фильма)
+и приватность B-PRIVACY нужно переиспользовать, а не дублировать.
 
 ### F1 — фронтенд
 
@@ -589,15 +627,17 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY
+## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY, B6, B7
 
 | Файл | Что важно |
 |---|---|
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
 | `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
+| `src/models/Film.js` | `likesCount` — публичный агрегат сердечек (weight > 0), `min: 0` |
 | `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
 | `src/models/WatchlistItem.js` | B6: «хочу посмотреть»; одна запись на user+film (`unique`), три индекса |
-| `src/models/User.js` | `counters.vibes`, `counters.watches`, `counters.watchlist`, `privacy`, `diaryPrivate`, `vibeWindow` |
+| `src/models/FilmLike.js` | B7: сердечко; одна запись на user+film (`unique`), `weight` — снимок trustWeight |
+| `src/models/User.js` | `counters.vibes`, `counters.watches`, `counters.watchlist`, `counters.filmLikes`, `privacy`, `diaryPrivate`, `vibeWindow` |
 | `src/models/Event.js` | `userId` автора (B-PRIVACY) + `{userId, createdAt}`; тип `watch` НЕ добавлялся (B5/5) |
 | `src/models/PrivacyChangeLog.js` | лог флагов, TTL 180 дней |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления; необязательный `watchId` (B5/2) |
@@ -607,24 +647,28 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `src/utils/privacy.js` | B-PRIVACY: `canViewProfile()` (ветка «друзья» — TODO B-SOCIAL), `privacyOf()`, `hiddenProfileStub()` |
 | `src/utils/diaryQuery.js` | общая выдача дневника для `/watches/me`, `/watches/user/:id`, `/users/:id/watches` |
 | `src/utils/watchlistQuery.js` | B6: общая выдача watchlist (`/watchlist/user`, `/users/:id/watchlist`) |
+| `src/utils/filmLikesQuery.js` | B7: общая выдача «Понравившихся» (`/users/me/likes`, `/users/:id/likes`); `weight` наружу не отдаётся |
 | `src/utils/paging.js` | общая пагинация списков (дневник, watchlist) |
-| `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`, `watchesCount`) |
+| `src/routes/films.routes.js` | B2: `/films`, `/films/top`, `/:id` (0 как маркер, `averageRating`, `watchesCount`); B7: `POST`/`DELETE /:id/like`, `liked` и `likesCount` в карточке |
 | `src/routes/watches.routes.js` | B5: создание/удаление/списки, `DIARY_PRIVATE`, `/:filmId/count`, гейт скрытого профиля |
 | `src/routes/watchlist.routes.js` | B6: идемпотентные `POST`/`DELETE`, `check`, свой список; `watchlistLimiter` |
 | `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler`; необязательный `watchId` |
 | `src/routes/events.routes.js` | B-PRIVACY: фильтр `hideFromFeed` по `userId` |
 | `src/routes/top.routes.js` | B-PRIVACY: скрытые профили исключены |
 | `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается; события одобрения с `userId` |
-| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` |
+| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` и `/watchlist`, B7: `/me/likes` и `/:id/likes` |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
-| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `vibes` = vibe, `watches` = Watch, `watchlist` = WatchlistItem |
-| `src/utils/counters.js` | поля `vibes` и `watches` в допустимых счётчиках |
+| `src/utils/counterMaintenance.js` | `ratings` = full, `vibes` = vibe, `watches` = Watch, `watchlist` = WatchlistItem, `filmLikes` = FilmLike |
+| `src/utils/counters.js` | поля `vibes`, `watches`, `filmLikes` в допустимых счётчиках |
 | `src/utils/helpers.js` | `createEvent(type, { userId, ... })` — без `userId` событие не пишется |
 | `scripts/migrate-p1-vibe-ratings.js` | миграция P1 (выполнена) |
 | `scripts/migrate-b5-watches.js` | миграция B5: `counters.watches` по факту + `diaryPrivate` |
 | `scripts/add-privacy-fields.js` | B-PRIVACY: `privacy` всем пользователям |
 | `scripts/add-event-userid.js` | B-PRIVACY: `Event.userId` по нику; >1 несматченных — стоп |
 | `scripts/add-watchlist-counters.js` | B6: `counters.watchlist` по факту |
+| `scripts/add-film-likes-fields.js` | B7: `Film.likesCount` + `counters.filmLikes` |
+| `scripts/reconcile-film-likes.js` | B7: сверка `Film.likesCount` с `FilmLike` (weight > 0) |
+| `scripts/flag-sybil-accounts.js` | помечает фермы: `trustWeight`, `Rating.weight`, `FilmLike.weight` + пересчёт `likesCount` |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
@@ -632,9 +676,10 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `tests/watch-diary.test.js` | 23 теста B5 (in-memory MongoDB) |
 | `tests/privacy.test.js` | 25 тестов B-PRIVACY (in-memory MongoDB) |
 | `tests/watchlist.test.js` | 17 тестов B6 (in-memory MongoDB) |
-| `tests/counters.test.js` | `vibes`/`watches`/`watchlist` в ожиданиях; мокает `Rating.exists` (B3) |
+| `tests/film-likes.test.js` | 19 тестов B7 (in-memory MongoDB) |
+| `tests/counters.test.js` | `vibes`/`watches`/`watchlist`/`filmLikes` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
-| `README.md`, `CHANGELOG.md` | документация 5.6 |
+| `README.md`, `CHANGELOG.md` | документация 5.7 |
 
 ---
 
@@ -643,20 +688,22 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
    `npm run test:gating` (15/15), `npm run test:reviews` (15/15),
-   `npm run test:watches` (23/23), `npm run test:privacy` (25/25) и
-   `npm run test:watchlist` (17/17) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 235/235; если нет — см. §8.
+   `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
+   `npm run test:watchlist` (17/17) и `npm run test:likes` (19/19) — внешняя Mongo
+   не нужна.
+3. Если есть Mongo — `npm test` — 254/254; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`,
    `admin.routes.js`, `Watch.js`, `watches.routes.js`, `WatchlistItem.js`,
-   `watchlist.routes.js`, `privacy.js` и `users.routes.js`,
+   `watchlist.routes.js`, `FilmLike.js`, `privacy.js` и `users.routes.js`,
    чтобы не отменить закрытые решения.
-5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY- и B6-миграции выполняются при
-   деплое; B2–B6 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
+5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-, B6- и B7-миграции выполняются при
+   деплое; B2–B7 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
    комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
    минимум рецензии 350 — решение заказчика, а не забытый порог;
    `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6);
    событие создаётся только через `createEvent` с `userId`, иначе его не скрыть (B-PRIVACY);
    `counters.watchlist` и `counters.filmLikes` — реальные счётчики, а не `unsupportedCounters`
-   (иначе reconcile обнулит: он делает `$set: { counters }` целиком).
+   (иначе reconcile обнулит: он делает `$set: { counters }` целиком);
+   `Film.likesCount` ≠ `User.counters.filmLikes` (публичный агрегат vs личные действия).

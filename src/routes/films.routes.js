@@ -4,10 +4,12 @@ const { body } = require('express-validator');
 const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
 const Watch   = require('../models/Watch');
+const FilmLike = require('../models/FilmLike');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer } = require('../middleware/security');
+const { writeLimiter, likeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
+const { incCounter } = require('../utils/counters');
 const {
   SORT_AXES,
   sortFieldFor,
@@ -118,11 +120,14 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
   if (!film) throw new NotFoundError('Фильм не найден');
 
   let userRating = null;
+  let liked = false;
   const token = extractBearer(req);
   if (token) {
     try {
       const decoded = verifyAccessToken(token);
       userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
+      // B7: сердечко — отдельная ось, поэтому отдельный запрос, а не из агрегатов.
+      liked = Boolean(await FilmLike.exists({ filmId: film._id, userId: decoded.userId }));
     } catch { /* игнор */ }
   }
 
@@ -135,10 +140,102 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
   res.json({
     ...withPosterUrl(shapeFilmDetail(film), req),
     watchesCount,
+    // DECISION: B7/2A — likesCount публичный агрегат и считает только лайки
+    // с weight > 0. Это НЕ counters.filmLikes (тот считает действия человека).
+    // `|| 0` — потому что агрегат возвращает сырой документ, без Mongoose-дефолтов.
+    likesCount: film.likesCount || 0,
+    liked,
     userRating: userRating
       ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
       : null
   });
+}));
+
+// POST /api/films/:id/like — поставить сердечко (идемпотентно).
+// DELETE /api/films/:id/like — снять сердечко (идемпотентно).
+//
+// DECISION: B7/1A — «двойной клик не наказывается» реализован разделением
+// намерения, а не toggle: повторный POST — это «оставь лайк», повторный DELETE —
+// «убери». Только так оба одновременных запроса ДЕТЕРМИНИРОВАННО дают одно
+// состояние и один счётчик — без таймеров и скрытого поведения. Клиент выбирает
+// действие по `liked` из GET /api/films/:id (он его и так получает).
+//
+// DECISION: B7/not-gated — не гейтится ни оценкой (B3/B4), ни приватностью:
+// сердечко — самое лёгкое действие, а свой список доступен владельцу всегда.
+//
+// DECISION: B7/event — событие в ленту не создаётся: «X лайкнул фильм Y» — шум.
+// DECISION: B7/4A — достижения не затрагиваются: counters.filmLikes не входит
+// в effective, новых ачивок за лайки нет, updateAchievements не вызывается.
+//
+// DECISION: B7/weight — weight лайка — снимок User.trustWeight на момент лайка
+// (тот же паттерн, что Rating.weight). В публичный Film.likesCount идут только
+// weight > 0 (2A); в counters.filmLikes — все лайки, включая weight: 0.
+
+async function currentLikesCount(filmId) {
+  const fresh = await Film.findById(filmId).select('likesCount');
+  return fresh?.likesCount || 0;
+}
+
+router.post('/:id/like', likeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const film = await Film.findById(req.params.id).select('likesCount');
+  if (!film) throw new NotFoundError('Фильм не найден');
+
+  const filmId = film._id;
+  const existing = await FilmLike.findOne({ userId: req.userId, filmId });
+
+  // Уже лайкнут — состояние то же, счётчики не трогаем (идемпотентность).
+  if (existing) {
+    return res.json({ liked: true, likesCount: film.likesCount || 0 });
+  }
+
+  const trustWeight = typeof req.user?.trustWeight === 'number' ? req.user.trustWeight : 1;
+
+  try {
+    await FilmLike.create({ userId: req.userId, filmId, weight: trustWeight });
+  } catch (error) {
+    // Параллельный POST успел создать лайк: состояние «лайкнуто», не удваиваем.
+    if (error?.code === 11000) {
+      return res.json({ liked: true, likesCount: await currentLikesCount(filmId) });
+    }
+    throw error;
+  }
+
+  if (trustWeight > 0) {
+    await Film.updateOne({ _id: filmId }, { $inc: { likesCount: 1 } });
+  }
+  await incCounter(req.userId, 'filmLikes', 1);
+
+  res.json({ liked: true, likesCount: await currentLikesCount(filmId) });
+}));
+
+router.delete('/:id/like', likeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const film = await Film.findById(req.params.id).select('likesCount');
+  if (!film) throw new NotFoundError('Фильм не найден');
+
+  const filmId = film._id;
+  const existing = await FilmLike.findOne({ userId: req.userId, filmId });
+
+  // Лайка нет — состояние уже «не лайкнут», счётчики не трогаем (идемпотентность).
+  if (!existing) {
+    return res.json({ liked: false, likesCount: film.likesCount || 0 });
+  }
+
+  const removed = await FilmLike.deleteOne({ _id: existing._id });
+
+  // Двойной DELETE: второй запрос удалил 0 документов — счётчики не двигаем.
+  if (removed.deletedCount === 1) {
+    if (existing.weight > 0) {
+      // $gt: 0 — счётчик не должен уходить в минус, даже если данные разъехались.
+      await Film.updateOne({ _id: filmId, likesCount: { $gt: 0 } }, { $inc: { likesCount: -1 } });
+    }
+    await incCounter(req.userId, 'filmLikes', -1);
+  }
+
+  res.json({ liked: false, likesCount: await currentLikesCount(filmId) });
 }));
 
 // GET /api/films/:id/ratings

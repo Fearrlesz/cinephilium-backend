@@ -1,6 +1,96 @@
-# Changelog — Cinephilium 5.6
+# Changelog — Cinephilium 5.7
 
 **Дата и время среза: 29.10.2026 (Europe/Moscow, UTC+03:00)**
+
+## 5.7 — B7: сердечко фильма (FilmLike)
+
+**Дата: 29.10.2026.**
+
+### Смысл
+
+Четвёртая ось после «смотрел», «думаю» и «хочу посмотреть»: «мне нравится».
+Сердечко — эмоция, а не суждение: можно оценить на 2/10 и лайкнуть, можно оценить
+на 10/10 и не лайкнуть. Отдельная коллекция `filmlike`, одна запись на пару user+film,
+не массив в `Film` и не массив в `User` (массив ломает пагинацию, `canViewProfile`
+и сверку публичного счётчика).
+
+### API
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/films/:id/like` | access | поставить сердечко (идемпотентно) → `200 { liked: true, likesCount }` |
+| DELETE | `/api/films/:id/like` | access | снять сердечко (идемпотентно) → `200 { liked: false, likesCount }` |
+| GET | `/api/films/:id` | — | добавлены `liked` (для анонима `false`) и `likesCount` |
+| GET | `/api/users/:id/likes` | — | публичные «Понравившиеся»; скрытый профиль без прав → `404 PROFILE_HIDDEN` |
+| GET | `/api/users/me/likes` | access | свои «Понравившиеся», без гейтинга |
+
+### Зафиксированные решения
+
+- **B7/1A** — «двойной клик не наказывается» реализован **разделением намерения**,
+  а не toggle: `POST` = «поставь», `DELETE` = «сними». Причина: с настоящим toggle
+  два одновременных `POST` — это два переключения, и второй запрос, увидев созданный
+  лайк, снял бы его. Тогда результат зависит от планировщика: тест проходил в общем
+  прогоне и падал в одиночном. Разделение намерения делает оба сценария
+  детерминированными, без таймеров и скрытого поведения. Клиент выбирает действие
+  по `liked`, который он и так получает из карточки фильма.
+- **B7/2A** — лайки с `weight: 0` **не** входят в публичный `Film.likesCount`,
+  но **входят** в личный `counters.filmLikes`.
+- **B7/4A** — достижения не зависят от `counters.filmLikes`: в `effective` он не входит,
+  новых ачивок за лайки нет, `updateAchievements` на лайке не вызывается.
+- **B7/5C** — `Film.likesCount` денормализован, сверяется `scripts/reconcile-film-likes.js`.
+- **B7/6=404** — публичный список при скрытом профиле и зрителе без прав отдаёт 404,
+  как дневник (B-PRIVACY) и watchlist (B6). Проверка — через `canViewProfile`,
+  без копии логики.
+- **B7/7A** — миграция `scripts/add-film-likes-fields.js` (поля `Film.likesCount`
+  и `User.counters.filmLikes`).
+- **B7/8B** — `likeLimiter`: 200/час **на IP**, по аналогии с `ratingLimiter`;
+  висит и на `POST`, и на `DELETE`.
+- **B7/not-gated** — `POST`/`DELETE` лайка и `GET /api/users/me/likes` приватностью
+  не гейтятся: свой список доступен владельцу всегда.
+- **B7/event** — событие в ленту не создаётся: «X лайкнул фильм Y» — шум.
+- **B7/weight** — `FilmLike.weight` — снимок `User.trustWeight` на момент лайка
+  (тот же паттерн, что `Rating.weight`).
+- **B7/unique** — уникальность `(userId, filmId)` это фича, а не ограничение.
+- **B7/recount** — при пометке фермы **полный пересчёт** затронутых фильмов, а не
+  инкремент «на количество активных лайков»: операция идемпотентна, не накапливает
+  дрейф при частичном сбое и совпадает по логике с reconciliation-скриптом.
+  Снятие пометки — симметрично.
+
+### Два разных числа — не путать
+
+| Поле | Смысл | Вес |
+|---|---|---|
+| `Film.likesCount` | сколько сердечек у фильма (публичный агрегат) | только `weight > 0` |
+| `User.counters.filmLikes` | сколько лайков поставил человек (личный счётчик) | все, включая `weight: 0` |
+
+Тест «два пользователя лайкнули один фильм» проверяет именно это: у фильма `2`,
+у каждого в профиле `1`.
+
+### Код и тесты
+
+- `src/models/FilmLike.js` — индексы `{userId, filmId} unique`, `{userId, addedAt}`,
+  `{filmId, weight}`.
+- `src/models/Film.js` — `likesCount` (default 0, min 0).
+- `src/routes/films.routes.js` — `POST`/`DELETE /:id/like`, `liked` и `likesCount`
+  в карточке фильма.
+- `src/routes/users.routes.js` — `/me/likes` (до `/:id/likes`!) и `/:id/likes`.
+- `src/utils/filmLikesQuery.js` — общая выдача списков (вес лайка наружу не отдаётся).
+- `scripts/flag-sybil-accounts.js` — теперь трогает четыре места: `User.trustWeight`,
+  `Rating.weight`, `FilmLike.weight`, `Film.likesCount`; в отчёт добавлены
+  `likesUpdated`, `likesRestored`, `filmsRecomputed`.
+- `src/utils/counterMaintenance.js` — `filmLikes` убран из `unsupportedCounters`
+  и считается по `FilmLike` (иначе `$set: { counters }` обнулил бы счётчик).
+- `tests/film-likes.test.js` — 19 тестов; прогон трижды подряд без флейков.
+- Итого **254 теста**, все зелёные.
+
+### Миграции (до деплоя, обе идемпотентны)
+
+```bash
+node scripts/add-film-likes-fields.js --dry-run
+node scripts/add-film-likes-fields.js
+node scripts/reconcile-film-likes.js --dry-run
+node scripts/reconcile-film-likes.js
+```
 
 ## 5.6 — B6: watchlist («хочу посмотреть»)
 

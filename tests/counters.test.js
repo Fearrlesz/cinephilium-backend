@@ -16,6 +16,7 @@ const Review = require('../src/models/Review');
 const Comment = require('../src/models/Comment');
 const Watch = require('../src/models/Watch');
 const WatchlistItem = require('../src/models/WatchlistItem');
+const FilmLike = require('../src/models/FilmLike');
 const Action = require('../src/models/Action');
 const Event = require('../src/models/Event');
 const { signAccessToken } = require('../src/utils/jwt');
@@ -277,6 +278,8 @@ test('11. migration recomputes counters for three users', async () => {
     [Watch, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 5],
     // B6: watchlist тоже стал реальной коллекцией — иначе reconcile обнулит счётчик.
     [WatchlistItem, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 8],
+    // B7: filmLikes — личный счётчик лайков, считается по FilmLike.
+    [FilmLike, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 2],
     [Action, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 4]
   ];
 
@@ -286,7 +289,7 @@ test('11. migration recomputes counters for three users', async () => {
     assert.equal(updates.length, 3);
     assert.deepEqual(updates[1].update.$set.counters, {
       ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 4, commentsApproved: 2,
-      watches: 6, watchlist: 9, filmLikes: 0, followers: 0, following: 0, likesReceived: 5
+      watches: 6, watchlist: 9, filmLikes: 3, followers: 0, following: 0, likesReceived: 5
     });
   });
 });
@@ -302,6 +305,7 @@ test('12. reconciliation repairs a corrupted rating counter', async () => {
     [Comment, 'countDocuments', async filter => filter.status ? 0 : 0],
     [Watch, 'countDocuments', async () => 0],
     [WatchlistItem, 'countDocuments', async () => 0],
+    [FilmLike, 'countDocuments', async () => 0],
     [Action, 'countDocuments', async () => 0]
   ];
   const originalLog = console.log;
@@ -335,12 +339,13 @@ test('counter migration uses the same expected values as countDocuments', async 
     [Comment, 'countDocuments', async filter => filter.status === 'approved' ? 4 : 5],
     [Watch, 'countDocuments', async () => 7],
     [WatchlistItem, 'countDocuments', async () => 8],
+    [FilmLike, 'countDocuments', async () => 4],
     [Action, 'countDocuments', async () => 6]
   ];
   await withOverrides(overrides, async () => {
     assert.deepEqual(await countUserCounters(userId), {
       ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 5, commentsApproved: 4,
-      watches: 7, watchlist: 8, filmLikes: 0, followers: 0, following: 0, likesReceived: 6
+      watches: 7, watchlist: 8, filmLikes: 4, followers: 0, following: 0, likesReceived: 6
     });
   });
 });
