@@ -7,6 +7,7 @@
     "test": "node --test",
     "test:vibe": "node --test tests/vibe-rating.test.js",
     "test:aggregates": "node --test tests/film-aggregates.test.js",
+    "test:gating": "node --test tests/comment-gating.test.js",
     "hooks:install": "git config core.hooksPath .githooks",
     "invite:new": "node scripts/new-invite.js"
   },

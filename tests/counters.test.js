@@ -194,6 +194,8 @@ test('7. creating a pending comment increments only comments', async () => {
   const comment = { _id: contentId, userId, filmId, text: 'Comment', status: 'pending' };
   await withOverrides([
     ...counterUpdateOverrides(calls),
+    // B3: создание комментария требует оценки фильма — иначе 403 до счётчиков.
+    [Rating, 'exists', async () => ({ _id: contentId })],
     [Film, 'findById', async () => film],
     [Comment.prototype, 'save', async function save() {}],
     [Comment, 'findById', () => query(comment)]

@@ -416,6 +416,10 @@ test('ответ на комментарий другого фильма отк�
   });
   const token = signAccessToken(user._id);
 
+  // B3: писать можно только по оценённому фильму, поэтому оценки есть у обоих.
+  await createRating(user._id, filmA._id);
+  await createRating(user._id, filmB._id);
+
   const foreign = await call('/api/comments', {
     method: 'POST', token,
     body: { filmId: String(filmB._id), text: 'ответ', parentId: String(parent._id) }
@@ -508,6 +512,9 @@ test('автор видит свой черновик комментария в 
   const stranger = await createUser();
   const film = await Film.create({ tmdbId: 25, title: 'Комментарий' });
   const token = signAccessToken(author._id);
+
+  // B3: без оценки фильма комментарий не создаётся (403).
+  await createRating(author._id, film._id);
 
   const created = await call('/api/comments', {
     method: 'POST', token,

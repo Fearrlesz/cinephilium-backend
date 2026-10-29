@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.1. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.2. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -262,6 +262,10 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 Списки `/api/films/:id/ratings` и `/api/films/:id/users` тоже фильтруют `weight: 0`,
 поэтому помеченные оценки не видны и в карточке фильма, а не только в средних.
 
+**Гейтинг комментариев (B3):** писать может только тот, кто оценил фильм —
+`403 RATING_REQUIRED_FOR_COMMENT` до валидации тела и до модерации. Лайки не гейтятся.
+Гейтинг не заменяет премодерацию, а работает до неё.
+
 ### Достижения
 
 - Вес прогресса: `effective = counters.ratings + counters.vibes / 5` (пять vibe = одна
@@ -344,9 +348,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
 | POST | `/api/reviews/:id/like` | access | лайк, +5 автору |
-| POST | `/api/comments` | access | комментарий или ответ |
+| POST | `/api/comments` | access + оценка фильма | комментарий или ответ; без оценки фильма — `403 RATING_REQUIRED_FOR_COMMENT` |
 | GET | `/api/comments/:filmId` | — | комментарии с ответами; свой черновик видит автор |
-| POST | `/api/comments/:id/like` | access | лайк, +1 автору |
+| POST | `/api/comments/:id/like` | access | лайк, +1 автору (не гейтится) |
 
 Ошибки `POST /api/ratings` для двухступенчатой оценки:
 
@@ -354,6 +358,24 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 |---|---|---|
 | `ALREADY_FULL_RATING` | 400 | пришла vibe-оценка, а у пары user+film уже стоит полная |
 | `VIBE_LIMIT_REACHED` | 429 | больше 50 новых vibe за 24 часа; `details: { limit, window: '24h', retryAt }` |
+
+### Гейтинг комментариев (B3)
+
+Комментировать может только тот, кто оценил фильм — любой оценкой, vibe или full.
+Одна цифра 1–10 уже означает «смотрел, есть мнение». Правило одинаково для корневого
+комментария и для ответа: иначе обход «не могу начать тред, зато могу ответить в чужом».
+Лайки не гейтятся — это реакция, а не высказывание.
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `RATING_REQUIRED_FOR_COMMENT` | 403 | у пары user+film нет `Rating` — сначала нужно оценить фильм |
+
+Проверка стоит до валидации тела, поэтому без оценки ответ 403, а не 400 «текст длинный»;
+кривой `filmId` остаётся 400. Оценка с `weight: 0` тоже считается входом: гейтинг про
+«смотрел ли», а анти-накрутка — про агрегаты; спам в этом случае ловит модерация. Админ
+не исключение. Фронт определяет доступность формы по `userRating` в `GET /api/films/:id`,
+а 403 — честный fallback при рассинхроне. Оценку и комментарий нужно отправлять
+последовательно: сначала `POST /api/ratings`, потом `POST /api/comments`.
 
 ### Пользователи, топ, события, админ
 
@@ -389,11 +411,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 npm test              # весь набор; нужен MongoDB на 127.0.0.1:27017
 npm run test:vibe     # только B1, сам поднимает in-memory MongoDB
 npm run test:aggregates  # только B2, тоже со своей in-memory MongoDB
+npm run test:gating      # только B3, тоже со своей in-memory MongoDB
 ```
 
-140 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
-14 в `vibe-rating.test.js` и 14 в `film-aggregates.test.js` — эти два сами поднимают
-in-memory MongoDB. У каждого файла своя БД, поэтому параллельный запуск безопасен.
+155 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js` и 15 в `comment-gating.test.js` —
+эти три сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому параллельный
+запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -406,11 +430,14 @@ in-memory MongoDB. У каждого файла своя БД, поэтому п
 | `tests/regression.test.js` | 33 |
 | `tests/vibe-rating.test.js` | 14 |
 | `tests/film-aggregates.test.js` | 14 |
+| `tests/comment-gating.test.js` | 15 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
 vibe, только full, пустой фильм, `weight: 0`, участники топа по каждой оси, `total`
 по фильтру, округление, алиас `averageRating`, `sort=new`, пустой топ с подсказкой.
+`comment-gating.test.js`: `npm run test:gating` — гейт комментариев, ответы, свой тред,
+админ, `weight: 0`, лайки, legacy, приоритет 403 над 400, гонка.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.

@@ -10,6 +10,7 @@ const User = require('../models/User');
 const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
+const { requireRatingForFilm } = require('../utils/ratingGate');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -18,11 +19,23 @@ const { checkValidation } = require('../utils/validate');
 const router = express.Router();
 
 // POST /api/comments
+// Гейтинг: комментировать может только тот, кто оценил фильм — любой оценкой.
+// Правило одинаково для корневых комментариев и для ответов, иначе обход:
+// «не могу начать тред, зато могу ответить в чужом».
+//
+// DECISION: B3/1A — комментарии, написанные до гейтинга, не трогаем: видимость
+// не меняется, поле legacy не заводим (схема Comment заморожена до B8), миграции нет.
+// DECISION: B3/4A — отдельного «can-post» эндпоинта нет: фронт смотрит на
+// userRating в GET /api/films/:id (там же, где сам ставит оценку), а 403 остаётся
+// честным ответом при рассинхроне состояния.
+// DECISION: B3/5A — гонка «vibe и комментарий одновременно» — задача фронта:
+// сначала POST /api/ratings, потом POST /api/comments. Бэк не ждёт и не ретраит,
+// он отвечает правду на момент запроса.
 router.post('/', writeLimiter, [
   body('filmId').isMongoId().withMessage('Некорректный ID фильма'),
   body('text').notEmpty().isLength({ max: 1000 }).withMessage('Текст не длиннее 1000 символов'),
   body('parentId').optional().isMongoId().withMessage('Некорректный ID родительского комментария')
-], authenticate, asyncHandler(async (req, res, next) => {
+], authenticate, requireRatingForFilm(), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
   try {
