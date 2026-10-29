@@ -77,6 +77,9 @@ router.get('/pending/comments', authenticate, isAdmin, asyncHandler(async (req, 
 }));
 
 // GET /api/admin/pending/reviews
+// DECISION: B4/5 — рецензия со isSpoiler здесь отдаётся полным текстом: модератор
+// обязан прочитать её целиком, иначе не сможет принять решение. Скрытие спойлера —
+// только публичный фронт.
 router.get('/pending/reviews', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
     const reviews = await Review.find({ status: 'pending' })

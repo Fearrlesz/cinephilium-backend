@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.2. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.3. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -233,7 +233,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
-| `reviews` | userId, filmId, ratingId, title, text (350..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
+| `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
@@ -265,6 +265,10 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 **Гейтинг комментариев (B3):** писать может только тот, кто оценил фильм —
 `403 RATING_REQUIRED_FOR_COMMENT` до валидации тела и до модерации. Лайки не гейтятся.
 Гейтинг не заменяет премодерацию, а работает до неё.
+
+**Гейтинг рецензий (B4):** строже — нужна полная оценка (15 критериев), иначе
+`403 FULL_RATING_REQUIRED_FOR_REVIEW`. `ratingId` ставит сервер, `isSpoiler` — флаг
+без влияния на модерацию.
 
 ### Достижения
 
@@ -343,7 +347,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | POST | `/api/ratings` | access | vibe-оценка `{filmId, vibe}` **или** полная `{filmId, vibe, scores, …}`; ответ содержит `completeness` |
 | GET | `/api/ratings/user` | access | свои оценки (с `completeness`) |
 | GET | `/api/ratings/:id/details` | — | детали оценки (с `completeness`) |
-| POST | `/api/reviews` | access | рецензия (350..15000 символов), `ratingId` — своя оценка этого же фильма |
+| POST | `/api/reviews` | access + полная оценка | рецензия (350..15000 символов), `isSpoiler`; `ratingId` ставит сервер из своей оценки, без `completeness: 'full'` — `403 FULL_RATING_REQUIRED_FOR_REVIEW` |
 | GET | `/api/reviews/:filmId` | — | одобренные рецензии; свой черновик видит автор, всё — админ |
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
@@ -376,6 +380,22 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 не исключение. Фронт определяет доступность формы по `userRating` в `GET /api/films/:id`,
 а 403 — честный fallback при рассинхроне. Оценку и комментарий нужно отправлять
 последовательно: сначала `POST /api/ratings`, потом `POST /api/comments`.
+
+### Гейтинг рецензий (B4)
+
+Рецензия — ступень выше комментария: vibe даёт право комментировать, полная оценка —
+право писать рецензию. Гейт стоит до валидации тела и до модерации, как в B3.
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `FULL_RATING_REQUIRED_FOR_REVIEW` | 403 | у пары user+film нет оценки с `completeness: 'full'` |
+
+`ratingId` в теле больше не принимается: сервер берёт `_id` своей оценки, поэтому старый
+фронт, который его присылает, продолжает работать — значение игнорируется (DECISION B4/1A).
+`isSpoiler` — булево, `default: false`, отдаётся везде, где отдаётся рецензия. Фильтра
+`?spoiler` на бэке нет: список отдаётся целиком, скрытие — дело фронта (DECISION B4/4).
+В админ-очереди спойлер показывается полным текстом — модератор должен прочитать его
+целиком (DECISION B4/5). Минимум текста остаётся 350 символов.
 
 ### Пользователи, топ, события, админ
 
@@ -412,12 +432,13 @@ npm test              # весь набор; нужен MongoDB на 127.0.0.1:2
 npm run test:vibe     # только B1, сам поднимает in-memory MongoDB
 npm run test:aggregates  # только B2, тоже со своей in-memory MongoDB
 npm run test:gating      # только B3, тоже со своей in-memory MongoDB
+npm run test:reviews     # только B4, тоже со своей in-memory MongoDB
 ```
 
-155 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
-14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js` и 15 в `comment-gating.test.js` —
-эти три сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому параллельный
-запуск безопасен.
+170 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`
+и 15 в `review-gating.test.js` — эти четыре сами поднимают in-memory MongoDB. У каждого
+файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -431,6 +452,7 @@ npm run test:gating      # только B3, тоже со своей in-memory M
 | `tests/vibe-rating.test.js` | 14 |
 | `tests/film-aggregates.test.js` | 14 |
 | `tests/comment-gating.test.js` | 15 |
+| `tests/review-gating.test.js` | 15 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -438,6 +460,8 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 по фильтру, округление, алиас `averageRating`, `sort=new`, пустой топ с подсказкой.
 `comment-gating.test.js`: `npm run test:gating` — гейт комментариев, ответы, свой тред,
 админ, `weight: 0`, лайки, legacy, приоритет 403 над 400, гонка.
+`review-gating.test.js`: `npm run test:reviews` — гейт рецензий, игнор `ratingId`,
+границы длины, `isSpoiler` во всех выдачах, полный текст в админ-очереди.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.

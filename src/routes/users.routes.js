@@ -85,6 +85,9 @@ async function sendProfile(req, res, userId) {
       ratingId: r.ratingId,
       title: r.title,
       text: r.text,
+      // B4: профиль перечисляет поля руками, поэтому флаг нужен здесь — иначе
+      // на профиле он бы тихо терялся (остальные ответы отдают документ целиком).
+      isSpoiler: r.isSpoiler === true,
       likes: r.likes,
       createdAt: r.createdAt
     })),

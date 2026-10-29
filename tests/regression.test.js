@@ -461,12 +461,14 @@ test('рецензия короче 350 символов отклоняется,
   assert.equal(exact.json.status, 'pending');
 });
 
-test('рецензия не принимает оценку другого фильма', async () => {
+test('рецензия требует полную оценку именно этого фильма', async () => {
   const author = await createUser();
   const filmA = await Film.create({ tmdbId: 22, title: 'A' });
   const filmB = await Film.create({ tmdbId: 23, title: 'B' });
   const ratingA = await createRating(author._id, filmA._id);
 
+  // B4: ratingId из тела игнорируется, сервер ищет свою full-оценку этого фильма.
+  // Оценка есть только у фильма A, значит рецензия на B недоступна.
   const response = await call('/api/reviews', {
     method: 'POST', token: signAccessToken(author._id),
     body: {
@@ -474,9 +476,9 @@ test('рецензия не принимает оценку другого фи�
       title: 'Чужой фильм', text: 'x'.repeat(400)
     }
   });
-  assert.equal(response.status, 400);
-  assert.equal(response.json.error.code, 'VALIDATION_ERROR');
-  assert.equal(await Review.countDocuments({ filmId: filmB._id }), 0, 'рецензия с чужой оценкой сохранилась');
+  assert.equal(response.status, 403);
+  assert.equal(response.json.error.code, 'FULL_RATING_REQUIRED_FOR_REVIEW');
+  assert.equal(await Review.countDocuments({ filmId: filmB._id }), 0, 'рецензия без своей оценки сохранилась');
 });
 
 test('автор видит свой черновик рецензии в списке фильма, чужой — нет', async () => {

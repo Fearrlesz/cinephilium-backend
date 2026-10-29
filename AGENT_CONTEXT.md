@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.2).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.3).
 
 ### Ключевые продуктовые правила
 
@@ -57,7 +57,17 @@
    - Отдельного `can-post` нет: фронт смотрит на `userRating` в `GET /films/:id`.
    - Legacy-комментарии не тронуты и не помечены, миграции нет (`DECISION B3/1A`).
    - Хелпер `src/utils/ratingGate.js` параметризован по `completeness` — B4 попросит `'full'`.
-6. **155 тестов, все зелёные** (см. §8).
+6. **B4 — гейтинг рецензий — реализован в этой ветке.**
+   - `POST /api/reviews` требует `completeness: 'full'`; иначе
+     `403 FULL_RATING_REQUIRED_FOR_REVIEW`. Гейт до валидации тела и до модерации.
+   - `ratingId` из тела **игнорируется**: сервер берёт `_id` своей оценки (B4/1A).
+     Проверка «чужая оценка» удалена как невозможная.
+   - `isSpoiler` — новый флаг в `Review`, `default: false`, отдаётся везде, включая
+     профиль (там поля перечисляются руками!). Фильтра `?spoiler` на бэке нет (B4/4).
+   - В админ-очереди спойлер отдаётся полным текстом (B4/5).
+   - Минимум текста **остался 350**: понижение до 10 отклонено заказчиком (B4/2).
+   - Миграция не нужна (B4/migration).
+7. **170 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -306,14 +316,16 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **155**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
-  + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3).
-- Эти три файла используют `mongodb-memory-server` — внешняя Mongo не нужна:
+- Всего **170**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+  + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
+  + 15 в `tests/review-gating.test.js` (B4).
+- Эти четыре файла используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
   npm run test:aggregates    # 14/14
   npm run test:gating        # 15/15
+  npm run test:reviews       # 15/15
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -342,6 +354,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   админ без оценки, `weight: 0`, лайк без оценки, видимость legacy-комментария,
   приоритет 403 над 400, кривой `filmId`, несуществующий фильм, согласованность
   с `userRating`, повторный запрос после гонки.
+
+- Что покрыто B4-тестами (`review-gating.test.js`): отказ без оценки и с vibe-only,
+  full открывает, админ и `weight: 0` (наследуют B3), приоритет 403 над 400, апгрейд
+  vibe → full, игнор `ratingId` из тела (включая чужой), запрос без `ratingId`,
+  границы 349/350 и 15000/15001, `isSpoiler` во всех выдачах и в профиле, старая
+  рецензия без поля читается как false, полный текст в админ-очереди.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -386,13 +404,22 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 админ не исключение. Legacy-комментарии не помечены и не скрыты, миграции нет.
 Подробности — CHANGELOG 5.2.
 
-### B4 — гейтинг рецензий (следующая задача)
+### B4 — гейтинг рецензий (сделано)
 
-Не реализовано. Смысл: рецензия строже комментария — нужна **полная** оценка
-(`completeness: 'full'`), плюс снятие порога 450 и работа со спойлерами. Хелпер уже готов:
-`requireRatingForFilm({ completeness: 'full' })` из `src/utils/ratingGate.js`; понадобится
-свой код ошибки и своя формулировка. Решение B3/3A (админ не exempt) по умолчанию
-переносится, но его стоит переспросить отдельно.
+Рецензию пишет только тот, кто прошёл 15 критериев: `403 FULL_RATING_REQUIRED_FOR_REVIEW`,
+гейт до валидации тела и до модерации. `ratingId` ставит сервер из своей оценки, из тела
+он игнорируется (B4/1A) — поэтому проверка «чужая оценка» удалена. `isSpoiler` —
+`default: false`, отдаётся везде, включая профиль (там поля перечислены руками).
+Минимум текста **остался 350** — понижение до 10 отклонено заказчиком, не «забыли».
+Фильтра `?spoiler` на бэке нет, в админ-очереди текст полный. Подробности — CHANGELOG 5.3.
+
+### B5 — дневник (следующая задача)
+
+Не реализовано. Смысл: оценка (любая) автоматически означает «просмотрено» и добавляет
+фильм в лист пользователя. **Важно:** в коде этого нет вообще — существует только
+числовой счётчик `counters.watchlist` и `User.watchlist`, никакой привязки watch к `Rating`.
+То есть B5 начинается с нуля: нужна новая сущность (дневник/лист), геймификация и
+развилки про автопривязку. В B4 это сознательно не трогали (DECISION B5/out-of-scope).
 
 ### F1 — фронтенд
 
@@ -407,6 +434,10 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 - Форма комментария: доступность по `userRating` из `GET /films/:id`, ловить `403
   RATING_REQUIRED_FOR_COMMENT` и показывать CTA «Оцените фильм». Отправлять оценку и
   комментарий **последовательно** — параллельная отправка даёт ложный 403 (DECISION B3/5A).
+- Форма рецензии: `ratingId` больше не отправлять (сервер его игнорирует), галочка
+  «спойлер» → `isSpoiler`, ловить `403 FULL_RATING_REQUIRED_FOR_REVIEW` и показывать CTA
+  «Оцените фильм полностью». На публичной странице спойлер скрывать плашкой «Показать» —
+  скрытие делает **только** фронт, бэк отдаёт текст целиком (DECISION B4/4, B4/5).
 - Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
   нужен нормальный текст/иконка.
 - README фронтенда/CHANGELOG обновить.
@@ -436,18 +467,21 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1 и B2
+## 12. Карта файлов P1, B2, B3, B4
 
 | Файл | Что важно |
 |---|---|
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
+| `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
 | `src/models/User.js` | `counters.vibes`, `vibeWindow` |
 | `src/models/Event.js` | тип `vibe` |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления |
 | `src/utils/filmAggregates.js` | B2: одна цепочка стадий на страницу, каталог и топ; `weight: { $ne: 0 }`, оси, три счётчика, `null` в списках |
-| `src/utils/ratingGate.js` | B3: `hasRatingForFilm()`, middleware `requireRatingForFilm({ completeness, code })`; B4 переиспользует с `'full'` |
+| `src/utils/ratingGate.js` | B3/B4: `hasRatingForFilm()`, `findRatingForFilm()`, middleware `requireRatingForFilm({ completeness, code, message, attachAs })` |
 | `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`) |
-| `src/routes/users.routes.js` | `completeness` в профиле, прогресс с `vibes`; профиль/лента — вне B2 (5B) |
+| `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler` |
+| `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается |
+| `src/routes/users.routes.js` | `completeness` в профиле, `isSpoiler` в рецензиях профиля; профиль/лента — вне B2 (5B) |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
 | `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe |
 | `src/utils/counters.js` | поле `vibes` в допустимых счётчиках |
@@ -456,20 +490,22 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
+| `tests/review-gating.test.js` | 15 тестов B4 (in-memory MongoDB) |
 | `tests/counters.test.js` | обновлён под `vibes`; мокает `Rating.exists` из-за B3 |
-| `README.md`, `CHANGELOG.md` | документация 5.2 |
+| `README.md`, `CHANGELOG.md` | документация 5.3 |
 
 ---
 
 ## 13. Быстрый чек-лист перед изменениями
 
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
-2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14) и
-   `npm run test:gating` (15/15) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 155/155; если нет — см. §8.
+2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
+   `npm run test:gating` (15/15) и `npm run test:reviews` (15/15) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 170/170; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
-   `films.routes.js`, `ratingGate.js` и `comments.routes.js`, чтобы не отменить
-   закрытые решения.
-5. Помнить: миграция уже на проде; B2 и B3 закрыты; фронт ещё не знает про vibe/full;
+   `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`
+   и `admin.routes.js`, чтобы не отменить закрытые решения.
+5. Помнить: миграция уже на проде; B2, B3 и B4 закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
-   комментарий без оценки даёт 403 до валидации тела — это тоже намеренно.
+   комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
+   минимум рецензии 350 — решение заказчика, а не забытый порог.
