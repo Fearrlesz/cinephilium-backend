@@ -19,6 +19,7 @@ const Action = require('../src/models/Action');
 const Event = require('../src/models/Event');
 const Review = require('../src/models/Review');
 const Comment = require('../src/models/Comment');
+const Watch = require('../src/models/Watch');
 const app = require('../src/app');
 const { buildPosterUrl } = require('../src/utils/poster');
 const { migratePosters } = require('../scripts/migrate-posters');
@@ -28,14 +29,22 @@ const requestFetch = global.fetch;
 
 let server;
 let baseUrl;
+let originalWatchCount;
 
 before(async () => {
+  // В этом файле нет подключения к Mongo: тесты подменяют запросы моделей.
+  // Страница фильма с B5 дополнительно считает записи дневника — без заглушки
+  // запрос буферизуется и падает по таймауту (10 с) в 500.
+  originalWatchCount = Watch.countDocuments;
+  Watch.countDocuments = async () => 0;
+
   server = app.listen(0, '127.0.0.1');
   await new Promise(resolve => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
 });
 
 after(async () => {
+  Watch.countDocuments = originalWatchCount;
   await new Promise((resolve, reject) => {
     server.close(error => error ? reject(error) : resolve());
   });

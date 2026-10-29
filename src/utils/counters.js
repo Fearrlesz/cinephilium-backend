@@ -8,6 +8,7 @@ const counterFields = new Set([
   'comments',
   'commentsApproved',
   'filmLikes',
+  'watches',
   'watchlist',
   'followers',
   'following',

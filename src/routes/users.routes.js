@@ -56,6 +56,9 @@ async function sendProfile(req, res, userId) {
       isAdmin: user.isAdmin,
       totalPoints: user.totalPoints,
       counters: user.counters || {},
+      // B5: фронт должен знать, что дневник закрыт, иначе покажет пустоту
+      // вместо «дневник закрыт». Само значение не секрет — это настройка видимости.
+      diaryPrivate: user.diaryPrivate === true,
       achievements: user.achievements || [],
       email: isOwnProfile ? user.email : undefined,
       isExclusive: user.nickname === EXCLUSIVE_NICKNAME

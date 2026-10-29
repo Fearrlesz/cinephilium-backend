@@ -18,6 +18,9 @@ const countersSchema = new mongoose.Schema({
   comments: { type: Number, default: 0 },
   commentsApproved: { type: Number, default: 0 },
   filmLikes: { type: Number, default: 0 },
+  // Сколько записей в дневнике просмотров (B5). Считает все записи, включая
+  // пересмотры: это история, а не уникальные фильмы.
+  watches: { type: Number, default: 0 },
   watchlist: { type: Number, default: 0 },
   followers: { type: Number, default: 0 },
   following: { type: Number, default: 0 },
@@ -57,6 +60,10 @@ const userSchema = new mongoose.Schema({
   passwordReset:  { type: passwordResetSchema, default: null },
   totalPoints:    { type: Number, default: 0 },
   counters:       { type: countersSchema, default: () => ({}) },
+  // DECISION: B5/3 — дневник по умолчанию открыт, но пользователь может его
+  // закрыть. Закрытый дневник не отдаётся другим; счётчик «N просмотров» фильма
+  // при этом остаётся агрегатным и продолжает считать все записи (см. роут фильма).
+  diaryPrivate:   { type: Boolean, default: false },
   achievements:   { type: [String], default: [] },
   consent:        { type: consentSchema, default: null },
   registeredIp:   { type: String, default: '' },

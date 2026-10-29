@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.3. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.4. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -228,12 +228,13 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, …), achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), diaryPrivate, achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
 | `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
 | `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
+| `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
@@ -328,7 +329,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | GET | `/api/films` | — | `page`, `limit` (<=100), `sort=technical\|combined\|vibe\|new`; все фильмы + средние и три счётчика |
 | GET | `/api/films/top` | — | `sort`, `limit` (<=20); только участники оси, плюс `total` и `fallback` |
 | GET | `/api/films/search-by-title` | — | `title`, регистронезависимый поиск |
-| GET | `/api/films/:id` | — | детали + средние + `userRating` (если есть токен) |
+| GET | `/api/films/:id` | — | детали + средние + `watchesCount` + `userRating` (если есть токен) |
 | GET | `/api/films/:id/ratings` | — | оценки фильма с авторами |
 | GET | `/api/films/:id/users` | — | кто оценивал |
 | POST | `/api/films/import` | access | импорт из TMDB, +2 балла (+5 админу) |
@@ -397,6 +398,36 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 В админ-очереди спойлер показывается полным текстом — модератор должен прочитать его
 целиком (DECISION B4/5). Минимум текста остаётся 350 символов.
 
+### Дневник просмотров (B5)
+
+«Просмотрено» ≠ «оценено». Дневник — история просмотров, а не состояние: записей на один
+фильм может быть много (пересмотры), поэтому это отдельная коллекция `watch`, а не поле
+в `Rating`. Дневник не гейтится ничем: это самое дешёвое действие в системе.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/watches` | access | `{ filmId, watchedAt?, isRewatch?, tags? }` → `201` |
+| GET | `/api/watches/me` | access | свой дневник: `page`, `limit` (<=100) |
+| GET | `/api/watches/user/:userId` | — | публичный дневник; закрытый → `403 DIARY_PRIVATE` |
+| PATCH | `/api/watches/settings` | access | `{ private: true\|false }` |
+| DELETE | `/api/watches/:id` | access | удалить свою запись; чужая → 404 |
+
+Правила:
+
+- `watchedAt` может быть в прошлом (задним числом), но не в будущем: «отметил, что посмотрю
+  завтра» — это watchlist, а не дневник. По умолчанию — сейчас.
+- `isRewatch` ставит пользователь, автоопределения нет (DECISION B5/4).
+- Теги не проходят премодерацию: 1–30 символов, до 10 уникальных, `trim`, дедуп без учёта
+  регистра (DECISION B5/1).
+- Дневник публичный по умолчанию, владелец может его закрыть (DECISION B5/3); закрытый
+  виден только владельцу и админу. `watchesCount` на фильме при этом продолжает считать
+  все записи — это агрегат без имён (DECISION B5/3b).
+- `counters.watches` меняется при создании и удалении. Событие в ленту не создаётся
+  (DECISION B5/5). Создание оценки запись дневника **не** создаёт (DECISION B5/8);
+  связать можно только явным `watchId` при создании оценки или рецензии (DECISION B5/2).
+- `GET /api/films/:id` отдаёт `watchesCount` — считает все записи, включая пользователей
+  с `weight: 0` (DECISION B5/6).
+
 ### Пользователи, топ, события, админ
 
 | Метод | Путь | Доступ |
@@ -433,12 +464,13 @@ npm run test:vibe     # только B1, сам поднимает in-memory Mon
 npm run test:aggregates  # только B2, тоже со своей in-memory MongoDB
 npm run test:gating      # только B3, тоже со своей in-memory MongoDB
 npm run test:reviews     # только B4, тоже со своей in-memory MongoDB
+npm run test:watches     # только B5, тоже со своей in-memory MongoDB
 ```
 
-170 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
-14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`
-и 15 в `review-gating.test.js` — эти четыре сами поднимают in-memory MongoDB. У каждого
-файла своя БД, поэтому параллельный запуск безопасен.
+193 теста на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
+15 в `review-gating.test.js` и 23 в `watch-diary.test.js` — эти пять сами поднимают
+in-memory MongoDB. У каждого файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -453,6 +485,7 @@ npm run test:reviews     # только B4, тоже со своей in-memory M
 | `tests/film-aggregates.test.js` | 14 |
 | `tests/comment-gating.test.js` | 15 |
 | `tests/review-gating.test.js` | 15 |
+| `tests/watch-diary.test.js` | 23 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -460,6 +493,9 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 по фильтру, округление, алиас `averageRating`, `sort=new`, пустой топ с подсказкой.
 `comment-gating.test.js`: `npm run test:gating` — гейт комментариев, ответы, свой тред,
 админ, `weight: 0`, лайки, legacy, приоритет 403 над 400, гонка.
+`watch-diary.test.js`: `npm run test:watches` — дневник, пересмотры, дата в прошлом и
+будущем, удаление своё/чужое, публичность и приватность, теги, отсутствие события,
+привязка оценки и рецензии, `watchesCount` с `weight: 0`, миграция.
 `review-gating.test.js`: `npm run test:reviews` — гейт рецензий, игнор `ratingId`,
 границы длины, `isSpoiler` во всех выдачах, полный текст в админ-очереди.
 
@@ -561,6 +597,36 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 Только после шага 4 — деплой. Числа в примере условные; важны нули на шагах 3–4.
 
+### B5 — дневник просмотров (Watch)
+
+Что делает миграция:
+
+- `User` без `counters.watches` → `0`;
+- затем `counters.watches` выставляется **по факту** — по количеству записей `Watch`
+  у пользователя (источник правды — коллекция, а не догадка);
+- `User` без `diaryPrivate` → `false` (дневник открыт по умолчанию).
+
+Коллекция `watch` новая, данных для переноса нет — создаются только индексы. Скрипт
+идемпотентен, поэтому безопасен и после появления первых записей.
+
+```bash
+# 1. Сухой прогон.
+node scripts/migrate-b5-watches.js --dry-run
+# ожидаемо: [migrate-b5] dry-run: users без counters.watches=N, users без diaryPrivate=N, ...
+
+# 2. Боевой прогон.
+node scripts/migrate-b5-watches.js
+# ожидаемо: [migrate-b5] обновлено: users=N, counters.watches=0
+
+# 3. Повторный сухой прогон — проверка идемпотентности.
+node scripts/migrate-b5-watches.js --dry-run
+# ожидаемо: users без counters.watches=0, users без diaryPrivate=0
+```
+
+Важно: `counters.watches` считает и `counterMaintenance.js`, иначе ближайший
+`migrate-counters.js` / `reconcile-counters.js` (он делает `$set: { counters }` целиком)
+затёр бы поле.
+
 ---
 
 ## 12. Деплой
@@ -613,6 +679,7 @@ node scripts/migrate-counters.js          # первичный расчёт coun
 node scripts/reconcile-counters.js        # сверка counters с документами
 node scripts/migrate-posters.js           # poster -> posterPath
 node scripts/migrate-p1-vibe-ratings.js   # P1: completeness + counters.vibes
+node scripts/migrate-b5-watches.js        # B5: counters.watches + diaryPrivate
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)

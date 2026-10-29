@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.3).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.4).
 
 ### Ключевые продуктовые правила
 
@@ -67,7 +67,18 @@
    - В админ-очереди спойлер отдаётся полным текстом (B4/5).
    - Минимум текста **остался 350**: понижение до 10 отклонено заказчиком (B4/2).
    - Миграция не нужна (B4/migration).
-7. **170 тестов, все зелёные** (см. §8).
+7. **B5 — дневник просмотров (Watch) — реализован в этой ветке.**
+   - Новая коллекция `watch`, НЕ поле в `Rating`: записей на фильм может быть много
+     (пересмотры). Не «упрощать» обратно в `Rating.watchedAt` — это откат идеи.
+   - `POST /api/watches` не гейтится; `watchedAt` в прошлом — норма, в будущем — 400;
+     `isRewatch` ручной; теги без модерации (лимиты в роуте).
+   - `counters.watches` (создание/удаление) + `User.diaryPrivate`; миграция
+     `scripts/migrate-b5-watches.js` **нужна** (в отличие от B4).
+   - Публичный дневник по умолчанию, закрывается через `PATCH /api/watches/settings`;
+     `watchesCount` на фильме считает все записи, включая `weight: 0` (B5/6).
+   - Связь с оценкой/рецензией — только явный `watchId` (B5/2); автосоздания записи
+     при оценке НЕТ (B5/8); события в ленту нет (B5/5).
+8. **193 теста, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -159,11 +170,13 @@ tests/                 node:test
 - `nickname` (unique), `password` (bcrypt), `email` (optional, legacy), `telegram`,
   `avatar`, `isAdmin`, `invitedBy`, `passwordReset`, `totalPoints`,
   `counters`, `achievements`, `consent`, `registeredIp`, `trustWeight`, `flagged`,
-  `vibeWindow` (служебное, `select: false`).
+  `diaryPrivate` (B5: закрытый дневник), `vibeWindow` (служебное, `select: false`).
 - `counters`: `ratings`, `vibes`, `reviews`, `reviewsApproved`, `comments`,
-  `commentsApproved`, `filmLikes`, `watchlist`, `followers`, `following`, `likesReceived`.
+  `commentsApproved`, `filmLikes`, `watches`, `watchlist`, `followers`, `following`,
+  `likesReceived`.
 - `counters.ratings` — **только полные** оценки; `counters.vibes` — **только текущие**
-  vibe-оценки (при апгрейде уменьшается).
+  vibe-оценки (при апгрейде уменьшается); `counters.watches` — **все** записи дневника,
+  включая пересмотры.
 
 ### Rating (главный объект P1)
 
@@ -195,7 +208,12 @@ tests/                 node:test
   `usedAt`, `revokedAt`, `expiresAt`.
 - `Film`: `tmdbId`, `title`, `year`, `posterPath`, `poster` (legacy), `description`,
   `genres`, `director`, `actors`, `trailer`, `createdBy`.
-- `Review`: `text` 350..15000, `ratingId` — своя оценка **того же** фильма.
+- `Review`: `text` 350..15000, `ratingId` — своя оценка **того же** фильма,
+  `isSpoiler` (default `false`).
+- `Watch` (B5): `userId`, `filmId`, `watchedAt` (не в будущем), `isRewatch` (ручной),
+  `tags` (1–30 символов, до 10, без модерации), `ratingId`/`reviewId` (опциональные
+  ссылки, ставятся только по явному `watchId` при создании оценки/рецензии).
+  **Много записей на пару user+film** — это пересмотры, а не дубликаты.
 - `Comment`: `text` <=1000, `parentId` — один уровень ответов.
 - `Event`: типы `rating`, `vibe`, `review`, `comment`, `film_add`, `achievement`.
 - `Action`: типы `rating`, `review`, `comment`, `like`, `import`, `admin_bonus`.
@@ -316,16 +334,17 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **170**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **193**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
-  + 15 в `tests/review-gating.test.js` (B4).
-- Эти четыре файла используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5).
+- Эти пять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
   npm run test:aggregates    # 14/14
   npm run test:gating        # 15/15
   npm run test:reviews       # 15/15
+  npm run test:watches       # 23/23
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -361,6 +380,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   границы 349/350 и 15000/15001, `isSpoiler` во всех выдачах и в профиле, старая
   рецензия без поля читается как false, полный текст в админ-очереди.
 
+- Что покрыто B5-тестами (`watch-diary.test.js`): запись без оценки, пересмотры
+  (много записей на фильм), дата в прошлом и в будущем, теги и лимиты, ручной
+  `isRewatch`, удаление своё/чужое, пагинация и сортировка, публичный и закрытый
+  дневник, `watchesCount` с `weight: 0`, отсутствие события в ленте, привязка
+  оценки и рецензии по `watchId`, отсутствие автосоздания записи, миграция.
+
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
 
@@ -375,6 +400,8 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   из существующей записи.
 - Агрегаты фильмов (`$lookup`) фильтруют `weight: { $ne: 0 }` — это касается всех трёх
   средних и всех трёх счётчиков. Фильтр не убирать.
+- Единственное исключение — `watchesCount` на странице фильма (B5): он считает **все**
+  записи дневника, включая `weight: 0`. Это намеренно (DECISION B5/6), а не забытый фильтр.
 - Списки `/films/:id/ratings` и `/films/:id/users` тоже фильтруют `weight: 0`.
 - `/api/top/users` исключает `flagged: true`.
 - Детектор: `scripts/flag-sybil-accounts.js`.
@@ -413,13 +440,25 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 Минимум текста **остался 350** — понижение до 10 отклонено заказчиком, не «забыли».
 Фильтра `?spoiler` на бэке нет, в админ-очереди текст полный. Подробности — CHANGELOG 5.3.
 
-### B5 — дневник (следующая задача)
+### B5 — дневник просмотров (сделано)
 
-Не реализовано. Смысл: оценка (любая) автоматически означает «просмотрено» и добавляет
-фильм в лист пользователя. **Важно:** в коде этого нет вообще — существует только
-числовой счётчик `counters.watchlist` и `User.watchlist`, никакой привязки watch к `Rating`.
-То есть B5 начинается с нуля: нужна новая сущность (дневник/лист), геймификация и
-развилки про автопривязку. В B4 это сознательно не трогали (DECISION B5/out-of-scope).
+Отдельная коллекция `watch`, не поле в `Rating`: записей на фильм может быть много
+(пересмотры). Создание не гейтится, `watchedAt` в будущем → 400, `isRewatch` ручной,
+теги без модерации. Публичный по умолчанию, закрывается через `PATCH /api/watches/settings`
+(`User.diaryPrivate`); закрытый отдаётся владельцу и админу, остальным `403 DIARY_PRIVATE`.
+`counters.watches` + миграция `scripts/migrate-b5-watches.js`. Связь с оценкой/рецензией —
+только явный `watchId`; автосоздания записи при оценке нет. Подробности — CHANGELOG 5.4.
+
+Следующему агенту важно: `watchesCount` на фильме **сознательно** считает записи
+пользователей с `weight: 0` (DECISION B5/6) — это не забытый фильтр.
+
+### B6 — watchlist (следующая задача)
+
+Не реализовано. «Хочу посмотреть»: одна запись на пару user+film (в отличие от дневника),
+без модерации. В B5 watchlist не трогали. Сюда же уезжает вопрос об идемпотентности
+удаления и пометка B4 про «добавляться в лист»: если это был watchlist, то автоматическое
+добавление **просмотренного** туда было бы багом, а не фичей (разъяснено в B5: имелся
+в виду дневник).
 
 ### F1 — фронтенд
 
@@ -438,6 +477,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   «спойлер» → `isSpoiler`, ловить `403 FULL_RATING_REQUIRED_FOR_REVIEW` и показывать CTA
   «Оцените фильм полностью». На публичной странице спойлер скрывать плашкой «Показать» —
   скрытие делает **только** фронт, бэк отдаёт текст целиком (DECISION B4/4, B4/5).
+- Дневник (B5): кнопка «отметить просмотр» (дата в прошлом разрешена, «пересмотр», теги),
+  страница «мой дневник» (`GET /api/watches/me`), блок в профиле
+  (`GET /api/watches/user/:id`), тумблер приватности (`PATCH /api/watches/settings`),
+  плашка «дневник закрыт» на `403 DIARY_PRIVATE`, «N просмотров» из `watchesCount`.
+  При создании оценки/рецензии — опционально отправлять `watchId`, если человек пришёл
+  из записи дневника.
 - Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
   нужен нормальный текст/иконка.
 - README фронтенда/CHANGELOG обновить.
@@ -467,32 +512,38 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1, B2, B3, B4
+## 12. Карта файлов P1, B2, B3, B4, B5
 
 | Файл | Что важно |
 |---|---|
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
 | `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
-| `src/models/User.js` | `counters.vibes`, `vibeWindow` |
-| `src/models/Event.js` | тип `vibe` |
-| `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления |
+| `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
+| `src/models/User.js` | `counters.vibes`, `counters.watches`, `diaryPrivate`, `vibeWindow` |
+| `src/models/Event.js` | тип `vibe` (тип `watch` НЕ добавлялся — B5/5) |
+| `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления; необязательный `watchId` (B5/2) |
 | `src/utils/filmAggregates.js` | B2: одна цепочка стадий на страницу, каталог и топ; `weight: { $ne: 0 }`, оси, три счётчика, `null` в списках |
 | `src/utils/ratingGate.js` | B3/B4: `hasRatingForFilm()`, `findRatingForFilm()`, middleware `requireRatingForFilm({ completeness, code, message, attachAs })` |
-| `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`) |
-| `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler` |
+| `src/utils/watchLink.js` | B5: `findOwnWatch()`, `setWatchLink()` — привязка по явному `watchId` |
+| `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`, `watchesCount`) |
+| `src/routes/watches.routes.js` | B5: создание/удаление/списки, приватность, `DIARY_PRIVATE` |
+| `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler`; необязательный `watchId` |
 | `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается |
-| `src/routes/users.routes.js` | `completeness` в профиле, `isSpoiler` в рецензиях профиля; профиль/лента — вне B2 (5B) |
+| `src/routes/users.routes.js` | `completeness` в профиле, `isSpoiler` в рецензиях, `diaryPrivate`; профиль/лента — вне B2 (5B) |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
-| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe |
-| `src/utils/counters.js` | поле `vibes` в допустимых счётчиках |
+| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe, `counters.watches` = Watch |
+| `src/utils/counters.js` | поля `vibes` и `watches` в допустимых счётчиках |
 | `src/utils/helpers.js` | передача `counters` в достижения |
-| `scripts/migrate-p1-vibe-ratings.js` | миграция (выполнена) |
+| `scripts/migrate-p1-vibe-ratings.js` | миграция P1 (выполнена) |
+| `scripts/migrate-b5-watches.js` | миграция B5: `counters.watches` по факту + `diaryPrivate` |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
 | `tests/review-gating.test.js` | 15 тестов B4 (in-memory MongoDB) |
-| `tests/counters.test.js` | обновлён под `vibes`; мокает `Rating.exists` из-за B3 |
-| `README.md`, `CHANGELOG.md` | документация 5.3 |
+| `tests/watch-diary.test.js` | 23 теста B5 (in-memory MongoDB) |
+| `tests/counters.test.js` | `vibes`/`watches` в ожиданиях; мокает `Rating.exists` (B3) |
+| `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
+| `README.md`, `CHANGELOG.md` | документация 5.4 |
 
 ---
 
@@ -500,12 +551,14 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
-   `npm run test:gating` (15/15) и `npm run test:reviews` (15/15) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 170/170; если нет — см. §8.
+   `npm run test:gating` (15/15), `npm run test:reviews` (15/15) и
+   `npm run test:watches` (23/23) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 193/193; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
-   `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`
-   и `admin.routes.js`, чтобы не отменить закрытые решения.
-5. Помнить: миграция уже на проде; B2, B3 и B4 закрыты; фронт ещё не знает про vibe/full;
+   `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`,
+   `admin.routes.js`, `Watch.js` и `watches.routes.js`, чтобы не отменить закрытые решения.
+5. Помнить: миграции P1 и B5 уже прошли; B2–B5 закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
    комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
-   минимум рецензии 350 — решение заказчика, а не забытый порог.
+   минимум рецензии 350 — решение заказчика, а не забытый порог;
+   `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6).

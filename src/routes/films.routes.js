@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const { body } = require('express-validator');
 const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
+const Watch   = require('../models/Watch');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer } = require('../middleware/security');
@@ -125,8 +126,15 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     } catch { /* игнор */ }
   }
 
+  // DECISION: B5/6 — «N просмотров» публично и считает ВСЕ записи дневника,
+  // включая записи пользователей с weight: 0: дневник не гейтится и не взвешивается,
+  // анти-накрутка живёт в агрегатах оценок, а сортировки по просмотрам нет.
+  // Считаем отдельным запросом по индексу filmId, чтобы не трогать агрегаты B2.
+  const watchesCount = await Watch.countDocuments({ filmId: film._id });
+
   res.json({
     ...withPosterUrl(shapeFilmDetail(film), req),
+    watchesCount,
     userRating: userRating
       ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
       : null

@@ -14,6 +14,7 @@ const Film = require('../src/models/Film');
 const Rating = require('../src/models/Rating');
 const Review = require('../src/models/Review');
 const Comment = require('../src/models/Comment');
+const Watch = require('../src/models/Watch');
 const Action = require('../src/models/Action');
 const Event = require('../src/models/Event');
 const { signAccessToken } = require('../src/utils/jwt');
@@ -271,6 +272,8 @@ test('11. migration recomputes counters for three users', async () => {
     [Rating, 'countDocuments', async ({ userId: id, completeness }) => completeness === 'vibe' ? 1 : ids.indexOf(id) + 1],
     [Review, 'countDocuments', async filter => filter.status ? ids.indexOf(filter.userId) : ids.indexOf(filter.userId) + 2],
     [Comment, 'countDocuments', async filter => filter.status ? ids.indexOf(filter.userId) + 1 : ids.indexOf(filter.userId) + 3],
+    // B5: дневник считается по коллекции Watch.
+    [Watch, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 5],
     [Action, 'countDocuments', async ({ userId: id }) => ids.indexOf(id) + 4]
   ];
 
@@ -280,7 +283,7 @@ test('11. migration recomputes counters for three users', async () => {
     assert.equal(updates.length, 3);
     assert.deepEqual(updates[1].update.$set.counters, {
       ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 4, commentsApproved: 2,
-      filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 5
+      watches: 6, filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 5
     });
   });
 });
@@ -294,6 +297,7 @@ test('12. reconciliation repairs a corrupted rating counter', async () => {
     [Rating, 'countDocuments', async () => 2],
     [Review, 'countDocuments', async filter => filter.status ? 0 : 0],
     [Comment, 'countDocuments', async filter => filter.status ? 0 : 0],
+    [Watch, 'countDocuments', async () => 0],
     [Action, 'countDocuments', async () => 0]
   ];
   const originalLog = console.log;
@@ -325,12 +329,13 @@ test('counter migration uses the same expected values as countDocuments', async 
     [Rating, 'countDocuments', async ({ completeness }) => completeness === 'vibe' ? 1 : 2],
     [Review, 'countDocuments', async filter => filter.status === 'approved' ? 1 : 3],
     [Comment, 'countDocuments', async filter => filter.status === 'approved' ? 4 : 5],
+    [Watch, 'countDocuments', async () => 7],
     [Action, 'countDocuments', async () => 6]
   ];
   await withOverrides(overrides, async () => {
     assert.deepEqual(await countUserCounters(userId), {
       ratings: 2, vibes: 1, reviews: 3, reviewsApproved: 1, comments: 5, commentsApproved: 4,
-      filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 6
+      watches: 7, filmLikes: 0, watchlist: 0, followers: 0, following: 0, likesReceived: 6
     });
   });
 });

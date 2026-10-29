@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Rating = require('../models/Rating');
 const Review = require('../models/Review');
 const Comment = require('../models/Comment');
+const Watch = require('../models/Watch');
 const Action = require('../models/Action');
 
 const BATCH_SIZE = 500;
@@ -13,13 +14,15 @@ const unsupportedCounters = {
 };
 
 async function countUserCounters(userId) {
-  const [ratings, vibes, reviews, reviewsApproved, comments, commentsApproved, likesReceived] = await Promise.all([
+  const [ratings, vibes, reviews, reviewsApproved, comments, commentsApproved, watches, likesReceived] = await Promise.all([
     Rating.countDocuments({ userId, completeness: 'full' }),
     Rating.countDocuments({ userId, completeness: 'vibe' }),
     Review.countDocuments({ userId }),
     Review.countDocuments({ userId, status: 'approved' }),
     Comment.countDocuments({ userId }),
     Comment.countDocuments({ userId, status: 'approved' }),
+    // B5: дневник — история, поэтому считаются все записи, включая пересмотры.
+    Watch.countDocuments({ userId }),
     Action.countDocuments({ userId, type: 'like' })
   ]);
 
@@ -30,6 +33,7 @@ async function countUserCounters(userId) {
     reviewsApproved,
     comments,
     commentsApproved,
+    watches,
     ...unsupportedCounters,
     likesReceived
   };

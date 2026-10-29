@@ -21,6 +21,7 @@ const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { withPosterUrl } = require('../utils/poster');
 const { createEvent, updateAchievements } = require('../utils/helpers');
+const { findOwnWatch, setWatchLink } = require('../utils/watchLink');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
@@ -111,6 +112,30 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
     const existing = await Rating.findOne({ userId: req.userId, filmId });
     const trustWeight = typeof req.user?.trustWeight === 'number' ? req.user.trustWeight : 1;
 
+    // DECISION: B5/2 — связь с дневником ставится только по явному watchId.
+    // Автопривязки нет: при нескольких просмотрах непонятно, к какому приклеивать.
+    let watchToLink = null;
+    if (body.watchId !== undefined && body.watchId !== null && body.watchId !== '') {
+      if (!mongoose.Types.ObjectId.isValid(String(body.watchId))) {
+        throw new ValidationError('Некорректный watchId');
+      }
+      watchToLink = await findOwnWatch(body.watchId, req.userId, filmId);
+      if (!watchToLink) {
+        throw new ValidationError('Запись дневника не найдена или относится к другому фильму');
+      }
+    }
+
+    const linkWatch = async ratingId => {
+      if (!watchToLink) return;
+      await setWatchLink({
+        watchId: watchToLink._id,
+        userId: req.userId,
+        filmId,
+        field: 'ratingId',
+        targetId: ratingId
+      });
+    };
+
     // ── Лайт: только vibe. Любое полное поле переводит запрос в полную ветку.
     if (!hasFullPayload(body)) {
       if (!Number.isFinite(vibe) || vibe < 1 || vibe > 10) {
@@ -133,6 +158,7 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
           { $set: { vibe, ip: req.ip || '' } },
           { new: true, runValidators: true }
         );
+        await linkWatch(updated._id);
         return res.status(201).json({
           rating: {
             ...updated.toObject(),
@@ -193,6 +219,8 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
         { vibe, completeness: 'vibe' }
       );
       // updateAchievements на vibe не вызывается — только на полной оценке.
+
+      await linkWatch(rating._id);
 
       return res.status(201).json({
         rating: {
@@ -352,6 +380,8 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
         }
       );
     }
+
+    await linkWatch(rating._id);
 
     res.status(201).json({
       rating,

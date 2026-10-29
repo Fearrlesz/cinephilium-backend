@@ -12,6 +12,7 @@ const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
 const { requireRatingForFilm } = require('../utils/ratingGate');
+const { findOwnWatch, setWatchLink } = require('../utils/watchLink');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError } = require('../utils/errors');
@@ -45,7 +46,9 @@ router.post('/', writeLimiter, [
     .notEmpty().withMessage('Текст рецензии обязателен')
     .isLength({ min: 350 }).withMessage('Текст рецензии должен быть не короче 350 символов')
     .isLength({ max: 15000 }).withMessage('Текст рецензии не длиннее 15000 символов'),
-  body('isSpoiler').optional().isBoolean().withMessage('isSpoiler должен быть true или false')
+  body('isSpoiler').optional().isBoolean().withMessage('isSpoiler должен быть true или false'),
+  // B5/2: необязательная ссылка на запись дневника — только явным watchId.
+  body('watchId').optional().isMongoId().withMessage('Некорректный watchId')
 ], authenticate, requireRatingForFilm({
   completeness: 'full',
   code: 'FULL_RATING_REQUIRED_FOR_REVIEW',
@@ -63,6 +66,15 @@ router.post('/', writeLimiter, [
     const existing = await Review.findOne({ userId: req.userId, filmId });
     if (existing) throw new ValidationError('Вы уже написали рецензию на этот фильм');
 
+    // DECISION: B5/2 — связь с дневником ставится только по явному watchId.
+    let watchToLink = null;
+    if (req.body.watchId !== undefined && req.body.watchId !== null && req.body.watchId !== '') {
+      watchToLink = await findOwnWatch(req.body.watchId, req.userId, filmId);
+      if (!watchToLink) {
+        throw new ValidationError('Запись дневника не найдена или относится к другому фильму');
+      }
+    }
+
     const review = new Review({
       userId: req.userId,
       filmId,
@@ -77,6 +89,16 @@ router.post('/', writeLimiter, [
     });
     await review.save();
     await incCounter(req.userId, 'reviews', 1);
+
+    if (watchToLink) {
+      await setWatchLink({
+        watchId: watchToLink._id,
+        userId: req.userId,
+        filmId,
+        field: 'reviewId',
+        targetId: review._id
+      });
+    }
 
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
