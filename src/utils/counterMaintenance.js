@@ -3,18 +3,21 @@ const Rating = require('../models/Rating');
 const Review = require('../models/Review');
 const Comment = require('../models/Comment');
 const Watch = require('../models/Watch');
+const WatchlistItem = require('../models/WatchlistItem');
 const Action = require('../models/Action');
 
 const BATCH_SIZE = 500;
+// Счётчики, которые пока не считаются ни из одной коллекции. ВАЖНО: processUsers
+// делает $set: { counters } целиком, поэтому всё, что не посчитано, обнуляется.
+// watchlist убран отсюда в B6: он стал реальной коллекцией и считается ниже.
 const unsupportedCounters = {
   filmLikes: 0,
-  watchlist: 0,
   followers: 0,
   following: 0
 };
 
 async function countUserCounters(userId) {
-  const [ratings, vibes, reviews, reviewsApproved, comments, commentsApproved, watches, likesReceived] = await Promise.all([
+  const [ratings, vibes, reviews, reviewsApproved, comments, commentsApproved, watches, watchlist, likesReceived] = await Promise.all([
     Rating.countDocuments({ userId, completeness: 'full' }),
     Rating.countDocuments({ userId, completeness: 'vibe' }),
     Review.countDocuments({ userId }),
@@ -23,6 +26,8 @@ async function countUserCounters(userId) {
     Comment.countDocuments({ userId, status: 'approved' }),
     // B5: дневник — история, поэтому считаются все записи, включая пересмотры.
     Watch.countDocuments({ userId }),
+    // B6: watchlist — состояние, одна запись на пару user+film.
+    WatchlistItem.countDocuments({ userId }),
     Action.countDocuments({ userId, type: 'like' })
   ]);
 
@@ -34,6 +39,7 @@ async function countUserCounters(userId) {
     comments,
     commentsApproved,
     watches,
+    watchlist,
     ...unsupportedCounters,
     likesReceived
   };

@@ -14,6 +14,7 @@ const { getUserAchievements } = require('../utils/achievements');
 const { withPosterUrl } = require('../utils/poster');
 const { HIDDEN_FIELDS, privacyOf, canViewProfile, hiddenProfileStub } = require('../utils/privacy');
 const { listDiary } = require('../utils/diaryQuery');
+const { listWatchlist } = require('../utils/watchlistQuery');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
@@ -241,6 +242,25 @@ router.get('/:id/watches', validateObjectId('id'), asyncHandler(async (req, res,
 
   const result = await listDiary(target._id, req.query, req);
   res.json({ ...result, private: target.diaryPrivate === true });
+}));
+
+// GET /api/users/:id/watchlist — публичный список «хочу посмотреть».
+// DECISION: B6/4=404 — при скрытом профиле и зрителе без прав 404, как у дневника
+// (B-PRIVACY/retro-fit), а не заглушка: watchlist — личный раздел (A2), а 404 —
+// язык личных разделов; страница профиля при этом отдаёт заглушку.
+// Проверка — через canViewProfile из utils/privacy.js, без дублирования логики.
+router.get('/:id/watchlist', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const target = await User.findById(req.params.id).select('privacy');
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  const viewer = await resolveViewer(req);
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
+  res.json(await listWatchlist(target._id, req.query, req));
 }));
 
 // GET /api/users/:id

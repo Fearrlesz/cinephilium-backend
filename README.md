@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.5. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.6. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -235,6 +235,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
 | `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
 | `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
+| `watchlistitems` | userId, filmId, addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId}` |
 | `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
 | `events` | type, user, userId (автор, B-PRIVACY), film, filmId, score, contentId, metadata | `createdAt`, `{userId, createdAt}` |
 | `privacychangelogs` | userId, field (hideProfile/hideFromFeed), oldValue, newValue, changedAt, ip | TTL 180 дней, `{userId, changedAt}` |
@@ -431,6 +432,34 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 - `GET /api/films/:id` отдаёт `watchesCount` — считает все записи, включая пользователей
   с `weight: 0` (DECISION B5/6).
 
+### Watchlist — «хочу посмотреть» (B6)
+
+Третья ось рядом с дневником и оценкой. Состояние, а не история: **одна** запись на пару
+user+film (уникальный индекс), в отличие от дневника с пересмотрами. Самое дешёвое
+действие: не гейтится ни оценкой, ни модерацией, ни приватностью.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/watchlist` | access | `{ filmId }` → `201`; повторное добавление → `200`; ответ `{ inWatchlist: true }` |
+| DELETE | `/api/watchlist/:id` | access | своё; уже удалённое/несуществующее → `200 { inWatchlist: false }`; чужое → 404 |
+| GET | `/api/watchlist/check/:filmId` | access | `{ inWatchlist: bool }` для кнопки на странице фильма |
+| GET | `/api/watchlist/user` | access | свой список, `page`, `limit` (<=100) |
+| GET | `/api/users/:id/watchlist` | — | публичный список; скрытый профиль без прав → `404 PROFILE_HIDDEN` |
+
+Правила:
+
+- Двойной клик не наказывается: `POST` идемпотентен, гонка двух запросов разрешается
+  уникальным индексом (второй получает `200`, а не `409`).
+- Удаление идемпотентно: ответ всегда `{ inWatchlist: false }`, без `{ deleted }` и без
+  `404` на «уже удалено» (DECISION B6/1A).
+- Watchlist **не влияет на достижения** и **не создаёт событие** в ленте: это намерение,
+  а не действие (B6/2A, B6/event).
+- Создание записи в дневнике (`POST /api/watches`) **не удаляет** фильм из watchlist;
+  автоудаления нет — предложение убрать делает фронт (B6/3B).
+- Лимит: 200 добавлений в час **на аккаунт** (не на IP).
+- `counters.watchlist` меняется при добавлении и удалении; в заглушке скрытого профиля
+  счётчиков нет вообще.
+
 ### Приватность профиля и ленты (B-PRIVACY)
 
 Два независимых флага: `hideProfile` — скрыть страницу профиля, `hideFromFeed` — не
@@ -495,13 +524,14 @@ npm run test:gating      # только B3, тоже со своей in-memory M
 npm run test:reviews     # только B4, тоже со своей in-memory MongoDB
 npm run test:watches     # только B5, тоже со своей in-memory MongoDB
 npm run test:privacy     # только B-PRIVACY, тоже со своей in-memory MongoDB
+npm run test:watchlist   # только B6, тоже со своей in-memory MongoDB
 ```
 
-218 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+235 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
 14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
-15 в `review-gating.test.js`, 23 в `watch-diary.test.js` и 25 в `privacy.test.js` — эти
-шесть сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому параллельный
-запуск безопасен.
+15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`
+и 17 в `watchlist.test.js` — эти семь сами поднимают in-memory MongoDB. У каждого файла
+своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -518,6 +548,7 @@ npm run test:privacy     # только B-PRIVACY, тоже со своей in-m
 | `tests/review-gating.test.js` | 15 |
 | `tests/watch-diary.test.js` | 23 |
 | `tests/privacy.test.js` | 25 |
+| `tests/watchlist.test.js` | 17 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -533,6 +564,9 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 `privacy.test.js`: `npm run test:privacy` — флаги и лог, TTL, заглушки скрытого профиля,
 права владельца/админа, 404 на достижения и дневник, публичный контент скрытого,
 агрегаты, лента, топ, `Event.userId` и обе миграции.
+`watchlist.test.js`: `npm run test:watchlist` — добавление/повтор/удаление и
+идемпотентность, чужое удаление, `check`, пагинация с `posterUrl`, приватность,
+независимость от достижений, событий и дневника, лимит 201-го запроса, миграция.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -689,6 +723,20 @@ node scripts/add-event-userid.js
 а без `privacy` у пользователя поле читается как «всё открыто» — миграция делает
 состояние явным.
 
+### B6 — watchlist
+
+```bash
+node scripts/add-watchlist-counters.js --dry-run
+# ожидаемо: [add-watchlist] dry-run: users без counters.watchlist=N, пользователей с записями=0, всего users=N
+node scripts/add-watchlist-counters.js
+# ожидаемо: [add-watchlist] обновлено users=N, пропущено (значение уже верное)=M
+```
+
+Коллекция `watchlistitems` новая — переносить нечего, создаются только индексы.
+Счётчик выставляется по факту из коллекции, поэтому повторный прогон печатает
+`обновлено users=0`. Важно: `counters.watchlist` считает и `counterMaintenance.js`
+(он делает `$set: { counters }` целиком) — без этого reconcile обнулил бы поле.
+
 ---
 
 ## 12. Деплой
@@ -744,6 +792,7 @@ node scripts/migrate-p1-vibe-ratings.js   # P1: completeness + counters.vibes
 node scripts/migrate-b5-watches.js        # B5: counters.watches + diaryPrivate
 node scripts/add-privacy-fields.js        # B-PRIVACY: privacy у всех
 node scripts/add-event-userid.js          # B-PRIVACY: Event.userId по нику
+node scripts/add-watchlist-counters.js    # B6: counters.watchlist по факту
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)

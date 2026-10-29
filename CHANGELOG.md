@@ -1,6 +1,86 @@
-# Changelog — Cinephilium 5.5
+# Changelog — Cinephilium 5.6
 
 **Дата и время среза: 29.10.2026 (Europe/Moscow, UTC+03:00)**
+
+## 5.6 — B6: watchlist («хочу посмотреть»)
+
+**Дата: 29.10.2026.**
+
+### Смысл
+
+Третья ось после «смотрю» (дневник) и «думаю» (оценка): «собираюсь увидеть».
+Самое дешёвое действие в системе — один клик, без оценки, дневника и текста.
+Watchlist — **состояние**, а не история: на пару user+film ровно одна запись,
+в отличие от дневника с пересмотрами. Это отдельная коллекция, а не массив в `User`:
+массив ломает пагинацию, `populate` и лимиты.
+
+Не гейтится ничем: ни vibe/full (B3/B4), ни модерацией, ни приватностью.
+Свой список доступен владельцу всегда.
+
+### API
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/watchlist` | access | `{ filmId }`; первое добавление → `201`, повторное → `200`; `{ inWatchlist: true }` |
+| DELETE | `/api/watchlist/:id` | access | своё; несуществующее/удалённое → `200 { inWatchlist: false }`; чужое → `404` |
+| GET | `/api/watchlist/check/:filmId` | access | `{ inWatchlist: bool }` для кнопки на странице фильма |
+| GET | `/api/watchlist/user` | access | свой список, `page`, `limit` (<=100), populate + `posterUrl` |
+| GET | `/api/users/:id/watchlist` | — | публичный список; при скрытом профиле без прав → `404 PROFILE_HIDDEN` |
+
+### Зафиксированные решения
+
+- **B6/1A** — удаление идемпотентно: несуществующая запись даёт `200` и
+  `{ inWatchlist: false }`, никакого `404` и никакого `{ deleted: bool }`.
+  Счётчик не уходит в минус (`incCounter` это гарантирует).
+- **B6/2A** — watchlist не влияет на достижения: `updateAchievements` не вызывается,
+  в `effective` не входит, отдельной ачивки нет. Намерение не кормит геймификацию.
+- **B6/3B** — автоудаления из watchlist при создании `Watch` **нет**: бэк watchlist
+  при этом не трогает вообще. Фильм остаётся в списке до явного удаления;
+  предложение «убрать из «Хочу посмотреть»?» — задача F-серии.
+- **B6/4=404** — публичный watchlist скрытого профиля без прав отдаёт `404`, как дневник
+  в B-PRIVACY; проверка через `canViewProfile` из `utils/privacy.js`, без копии логики.
+- **B6/5A** — миграция `scripts/add-watchlist-counters.js` явная, идемпотентная,
+  с `--dry-run`; счётчик выставляется по факту из коллекции.
+- **B6/6B** — лимитер `watchlistLimiter`: 200 добавлений в час **на аккаунт**
+  (`keyGenerator` → `userId`, лимитер стоит после `authenticate`). Переделка на IP
+  не понадобилась; `validate: false`, потому что стандартные проверки библиотеки
+  рассчитаны на IP-ключ.
+- **B6/not-gated** — `POST`, `DELETE`, `GET /api/watchlist/user` и
+  `GET /api/watchlist/check/:filmId` приватностью не гейтятся.
+- **B6/event** — событие в ленту при добавлении не создаётся: намерение, а не действие.
+- **B6/unique** — уникальность `(userId, filmId)` это фича: двойной клик не наказывается,
+  а гонка двух `POST` разрешается уникальным индексом (второй получает `200`, а не `409`).
+
+### Счётчик и обслуживание
+
+`counters.watchlist` инкрементится при создании и декрементится при удалении.
+Важная находка: в `counterMaintenance` этот счётчик лежал в `unsupportedCounters`
+как всегда-ноль, а `processUsers` делает `$set: { counters }` **целиком** — то есть
+ближайший `migrate-counters.js` / `reconcile-counters.js` обнулил бы новый счётчик.
+Поэтому `watchlist` убран из `unsupportedCounters` и считается через
+`WatchlistItem.countDocuments`.
+
+### Код и тесты
+
+- `src/models/WatchlistItem.js` — `userId`, `filmId`, `addedAt`; индексы
+  `{userId, filmId} unique`, `{userId, addedAt}`, `{filmId}`.
+- `src/routes/watchlist.routes.js` — API; `src/utils/watchlistQuery.js` — общая выдача;
+  `src/utils/paging.js` — общая пагинация (вынесена из дневника).
+- `tests/watchlist.test.js` — 17 тестов: добавление/повтор/удаление/идемпотентность,
+  чужое удаление, `check`, пагинация и `posterUrl`, приватность во всех вариантах,
+  отсутствие влияния на достижения и события, независимость от `Watch`,
+  лимит 201-го запроса (с ротацией IP — доказывает, что ключ на аккаунт), миграция.
+- `tests/counters.test.js` — `watchlist` в ожиданиях и стаб `WatchlistItem`.
+- Итого **235 тестов**, все зелёные.
+
+### Миграция
+
+```bash
+node scripts/add-watchlist-counters.js --dry-run
+node scripts/add-watchlist-counters.js
+```
+
+Коллекция `watchlistitems` новая, данных для переноса нет — создаются только индексы.
 
 ## 5.5 — B-PRIVACY: приватность профиля и ленты, Event.userId, retro-fit B5
 

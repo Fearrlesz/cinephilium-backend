@@ -116,6 +116,20 @@ const contactLimiter = rateLimit({
   handler: rateLimitHandler('Слишком много заявок с этого адреса. Напиши админу в Telegram')
 });
 
+/* 4d. Лимит на добавление в watchlist: 200 в час на аккаунт (DECISION B6/6B).
+   Ключ — userId, поэтому лимитер ставится ПОСЛЕ authenticate: инфраструктура
+   это позволяет, переделка на IP-ключ не понадобилась. validate: false — стандартные
+   проверки библиотеки рассчитаны на IP-ключ и к этому лимитеру неприменимы. */
+const watchlistLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  keyGenerator: req => String(req.userId || 'anonymous'),
+  validate: false,
+  handler: rateLimitHandler('Слишком много добавлений в «Хочу посмотреть». Попробуйте позже')
+});
+
 /* 5. Ограничение размера JSON-тела */
 const bodyLimit = '100kb';
 
@@ -182,6 +196,7 @@ module.exports = {
   registerLimiter,
   ratingLimiter,
   contactLimiter,
+  watchlistLimiter,
   bodyLimit,
   noSqlSanitizer,
   clientIp,

@@ -3,14 +3,7 @@
 // и правила приватности не разъехались между точками входа.
 const Watch = require('../models/Watch');
 const { withPosterUrl } = require('./poster');
-
-const MAX_LIMIT = 100;
-
-function parsePaging(query = {}) {
-  const page  = Math.max(1, parseInt(query.page, 10) || 1);
-  const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(query.limit, 10) || 20));
-  return { page, limit, skip: (page - 1) * limit };
-}
+const { parsePaging, paginationMeta } = require('./paging');
 
 function presentWatch(watch, req) {
   const object = typeof watch.toObject === 'function' ? watch.toObject() : { ...watch };
@@ -35,8 +28,8 @@ async function listDiary(userId, query, req) {
 
   return {
     items: items.map(watch => presentWatch(watch, req)),
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) }
+    pagination: paginationMeta({ page, limit, total })
   };
 }
 
-module.exports = { MAX_LIMIT, parsePaging, presentWatch, listDiary };
+module.exports = { presentWatch, listDiary };

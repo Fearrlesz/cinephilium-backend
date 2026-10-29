@@ -99,6 +99,9 @@ async function loadViewer(req) {
 // по явному watchId при создании оценки/рецензии (B5/2).
 // DECISION: B5/5 — событие в общую ленту не создаётся: дневник — память,
 // а не сигнал, и пересмотры не должны забивать поток.
+// DECISION: B6/3B — автоудаления из watchlist при создании Watch НЕТ: бэк watchlist
+// здесь не трогает вообще. Фильм остаётся в «Хочу посмотреть» до явного удаления;
+// предложение убрать его — задача F-серии, а не молчаливое действие сервера.
 router.post('/', writeLimiter, authenticate, asyncHandler(async (req, res, next) => {
   const body = req.body || {};
   const { filmId } = body;

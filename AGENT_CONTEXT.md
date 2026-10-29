@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.5).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.6).
 
 ### Ключевые продуктовые правила
 
@@ -91,7 +91,19 @@
      `POST/DELETE`, `GET /api/watches/me` и `GET /api/watches/:filmId/count` — нет.
    - Миграции: `scripts/add-privacy-fields.js` и `scripts/add-event-userid.js` —
      **обе нужны** до деплоя.
-9. **218 тестов, все зелёные** (см. §8).
+9. **B6 — watchlist («хочу посмотреть») — реализован в этой ветке.**
+   - Отдельная коллекция `watchlistitem`: **одна** запись на пару user+film (unique),
+     не массив в `User` — иначе ломаются пагинация, populate и лимиты.
+   - `POST` идемпотентен (первое — 201, повтор — 200), `DELETE` идемпотентен (всегда
+     200 `{ inWatchlist: false }`, без `{ deleted }` и без 404 на «уже удалено»).
+   - Публичный список `GET /api/users/:id/watchlist` гейтится `canViewProfile` → 404;
+     свои эндпоинты и `check` — нет.
+   - Не влияет на достижения (2A) и не создаёт событие; создание `Watch` не удаляет
+     фильм из watchlist (3B).
+   - Лимитер `watchlistLimiter`: 200/час **на аккаунт** (ключ `userId`, после authenticate).
+   - `counters.watchlist` считается в `counterMaintenance` (иначе reconcile обнулит!).
+   - Миграция `scripts/add-watchlist-counters.js` — нужна до деплоя.
+10. **235 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -235,6 +247,9 @@ tests/                 node:test
   не пишет. Прямых `Event.create` в роутах быть не должно.
 - `PrivacyChangeLog` (B-PRIVACY): `userId`, `field`, `oldValue`, `newValue`, `changedAt`, `ip`;
   TTL 180 дней. Пишется только при фактическом изменении флага.
+- `WatchlistItem` (B6): `userId`, `filmId`, `addedAt`; **одна** запись на пару
+  user+film (`{userId, filmId}` unique). Это состояние, а не история: «пересмотров»
+  в watchlist не бывает.
 - `Action`: типы `rating`, `review`, `comment`, `like`, `import`, `admin_bonus`.
 - `Session`: `tokenHash`, TTL по `expiresAt`.
 
@@ -353,11 +368,11 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **218**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **235**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
-  + 25 в `tests/privacy.test.js` (B-PRIVACY).
-- Эти шесть файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6).
+- Эти семь файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -366,6 +381,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:reviews       # 15/15
   npm run test:watches       # 23/23
   npm run test:privacy       # 25/25
+  npm run test:watchlist     # 17/17
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -412,6 +428,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   права владельца/админа, публичный контент скрытого, участие в агрегатах, топ, лента,
   `canViewProfile` unit, `Event.userId` через `createEvent`, обе миграции (включая стоп
   при >1 несматченных), retro-fit дневника и счётчик без фильтра.
+
+- Что покрыто B6-тестами (`watchlist.test.js`): добавление/повтор/удаление,
+  идемпотентность удаления и счётчика, чужое удаление, `check`, пагинация и `posterUrl`,
+  публичный список при открытом и скрытом профиле (404/владелец/админ),
+  независимость от достижений, событий и создания `Watch`, лимит 201-го запроса
+  (с ротацией IP — доказывает, что ключ на аккаунт), миграция.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -495,13 +517,21 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 `GET /api/watches/user/:id` при скрытом профиле отдают `404 PROFILE_HIDDEN`. Свои
 эндпоинты дневника и счётчик по фильму не гейтятся. Подробности — CHANGELOG 5.5.
 
-### B6 — watchlist (следующая задача)
+### B6 — watchlist (сделано)
 
-Не реализовано. «Хочу посмотреть»: одна запись на пару user+film (в отличие от дневника),
-без модерации. В B5 watchlist не трогали. Сюда же уезжает вопрос об идемпотентности
-удаления и пометка B4 про «добавляться в лист»: если это был watchlist, то автоматическое
-добавление **просмотренного** туда было бы багом, а не фичей (разъяснено в B5: имелся
-в виду дневник).
+Отдельная коллекция `watchlistitem`, одна запись на пару user+film. `POST` и `DELETE`
+идемпотентны (`{ inWatchlist }` в ответе, без `{ deleted }`), `check` для кнопки,
+свой список и публичный `GET /api/users/:id/watchlist` с `canViewProfile` → 404.
+Не влияет на достижения и не создаёт события; создание `Watch` фильм не убирает (3B).
+Лимит добавлений — 200/час на аккаунт. Подробности — CHANGELOG 5.6.
+
+### B7 — лайк фильма (следующая задача)
+
+Не реализовано. Две развилки, которые надо закрыть: (а) гонка двойного лайка —
+идемпотентный toggle или 409; (б) участвуют ли лайки пользователей с `weight: 0`
+в публичном счётчике. `counters.filmLikes` сейчас в `unsupportedCounters` как
+всегда-ноль — при реализации обязательно убрать оттуда и научить
+`counterMaintenance` считать (иначе reconcile обнулит, как было с `watchlist` в B6).
 
 ### F1 — фронтенд
 
@@ -566,7 +596,8 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
 | `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
 | `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
-| `src/models/User.js` | `counters.vibes`, `counters.watches`, `privacy`, `diaryPrivate`, `vibeWindow` |
+| `src/models/WatchlistItem.js` | B6: «хочу посмотреть»; одна запись на user+film (`unique`), три индекса |
+| `src/models/User.js` | `counters.vibes`, `counters.watches`, `counters.watchlist`, `privacy`, `diaryPrivate`, `vibeWindow` |
 | `src/models/Event.js` | `userId` автора (B-PRIVACY) + `{userId, createdAt}`; тип `watch` НЕ добавлялся (B5/5) |
 | `src/models/PrivacyChangeLog.js` | лог флагов, TTL 180 дней |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления; необязательный `watchId` (B5/2) |
@@ -575,30 +606,35 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `src/utils/watchLink.js` | B5: `findOwnWatch()`, `setWatchLink()` — привязка по явному `watchId` |
 | `src/utils/privacy.js` | B-PRIVACY: `canViewProfile()` (ветка «друзья» — TODO B-SOCIAL), `privacyOf()`, `hiddenProfileStub()` |
 | `src/utils/diaryQuery.js` | общая выдача дневника для `/watches/me`, `/watches/user/:id`, `/users/:id/watches` |
+| `src/utils/watchlistQuery.js` | B6: общая выдача watchlist (`/watchlist/user`, `/users/:id/watchlist`) |
+| `src/utils/paging.js` | общая пагинация списков (дневник, watchlist) |
 | `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`, `watchesCount`) |
 | `src/routes/watches.routes.js` | B5: создание/удаление/списки, `DIARY_PRIVATE`, `/:filmId/count`, гейт скрытого профиля |
+| `src/routes/watchlist.routes.js` | B6: идемпотентные `POST`/`DELETE`, `check`, свой список; `watchlistLimiter` |
 | `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler`; необязательный `watchId` |
 | `src/routes/events.routes.js` | B-PRIVACY: фильтр `hideFromFeed` по `userId` |
 | `src/routes/top.routes.js` | B-PRIVACY: скрытые профили исключены |
 | `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается; события одобрения с `userId` |
 | `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
-| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe, `counters.watches` = Watch |
+| `src/utils/counterMaintenance.js` | `counters.ratings` = full, `vibes` = vibe, `watches` = Watch, `watchlist` = WatchlistItem |
 | `src/utils/counters.js` | поля `vibes` и `watches` в допустимых счётчиках |
 | `src/utils/helpers.js` | `createEvent(type, { userId, ... })` — без `userId` событие не пишется |
 | `scripts/migrate-p1-vibe-ratings.js` | миграция P1 (выполнена) |
 | `scripts/migrate-b5-watches.js` | миграция B5: `counters.watches` по факту + `diaryPrivate` |
 | `scripts/add-privacy-fields.js` | B-PRIVACY: `privacy` всем пользователям |
 | `scripts/add-event-userid.js` | B-PRIVACY: `Event.userId` по нику; >1 несматченных — стоп |
+| `scripts/add-watchlist-counters.js` | B6: `counters.watchlist` по факту |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
 | `tests/review-gating.test.js` | 15 тестов B4 (in-memory MongoDB) |
 | `tests/watch-diary.test.js` | 23 теста B5 (in-memory MongoDB) |
 | `tests/privacy.test.js` | 25 тестов B-PRIVACY (in-memory MongoDB) |
-| `tests/counters.test.js` | `vibes`/`watches` в ожиданиях; мокает `Rating.exists` (B3) |
+| `tests/watchlist.test.js` | 17 тестов B6 (in-memory MongoDB) |
+| `tests/counters.test.js` | `vibes`/`watches`/`watchlist` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
-| `README.md`, `CHANGELOG.md` | документация 5.5 |
+| `README.md`, `CHANGELOG.md` | документация 5.6 |
 
 ---
 
@@ -606,17 +642,21 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
-   `npm run test:gating` (15/15), `npm run test:reviews` (15/15) и
-   `npm run test:watches` (23/23) и `npm run test:privacy` (25/25) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 218/218; если нет — см. §8.
+   `npm run test:gating` (15/15), `npm run test:reviews` (15/15),
+   `npm run test:watches` (23/23), `npm run test:privacy` (25/25) и
+   `npm run test:watchlist` (17/17) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 235/235; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`,
-   `admin.routes.js`, `Watch.js`, `watches.routes.js`, `privacy.js` и `users.routes.js`,
+   `admin.routes.js`, `Watch.js`, `watches.routes.js`, `WatchlistItem.js`,
+   `watchlist.routes.js`, `privacy.js` и `users.routes.js`,
    чтобы не отменить закрытые решения.
-5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-миграции выполняются при деплое;
-   B2–B5 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
+5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY- и B6-миграции выполняются при
+   деплое; B2–B6 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
    комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
    минимум рецензии 350 — решение заказчика, а не забытый порог;
    `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6);
-   событие создаётся только через `createEvent` с `userId`, иначе его не скрыть (B-PRIVACY).
+   событие создаётся только через `createEvent` с `userId`, иначе его не скрыть (B-PRIVACY);
+   `counters.watchlist` и `counters.filmLikes` — реальные счётчики, а не `unsupportedCounters`
+   (иначе reconcile обнулит: он делает `$set: { counters }` целиком).
