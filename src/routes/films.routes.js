@@ -7,7 +7,14 @@ const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
-const { roundTenth } = require('../config/scoring');
+const {
+  SORT_AXES,
+  sortFieldFor,
+  FILM_STATS_STAGES,
+  participantMatch,
+  shapeFilmAggregates,
+  shapeFilmDetail
+} = require('../utils/filmAggregates');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
@@ -29,55 +36,52 @@ function escapeRegex(value) {
 // ─────────────────────────────────────────────
 
 // GET /api/films/top
+// DECISION: B2/6A — в топе участвуют только фильмы, у которых есть число по
+// выбранной оси. Фильм без единой полной оценки не занимает место с нулём на
+// дне: у него нет значения, по которому его ранжировать. total считает ровно
+// участников, а не все фильмы базы.
 router.get('/top', asyncHandler(async (req, res, next) => {
-  try {
-    const sort  = req.query.sort || 'technical';
-    const limit = Math.min(parseInt(req.query.limit) || 5, 20);
-    const sortField =
-      sort === 'combined' ? 'averageCombined' :
-      sort === 'vibe'     ? 'averageVibe'     :
-                            'averageRating';
+  const sort  = req.query.sort || 'technical';
+  const limit = Math.min(parseInt(req.query.limit) || 5, 20);
+  const sortField = sortFieldFor(sort);
 
-    const films = await Film.aggregate([
-      {
-        $lookup: {
-          from: 'ratings',
-          let: { filmId: '$_id' },
-          pipeline: [
-            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
-            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
-            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
-          ],
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating:   { $avg: '$ratings.technicalScore' },
-          averageVibe:     { $avg: '$ratings.vibe' },
-          averageCombined: { $avg: '$ratings.combinedScore' },
-          votesCount:      { $size: '$ratings' },
-          _sortKey: {
-            $ifNull: [{
-              $avg: `$ratings.${
-                sortField === 'averageCombined' ? 'combinedScore' :
-                sortField === 'averageVibe'     ? 'vibe' :
-                                                  'technicalScore'
-              }`
-            }, -1]
-          }
-        }
-      },
-      { $match: { _sortKey: { $gt: 0 } } },
-      { $project: { ratings: 0, _sortKey: 0 } },
-      { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
-      { $limit: limit }
-    ]);
+  const [result = {}] = await Film.aggregate([
+    ...FILM_STATS_STAGES,
+    {
+      $facet: {
+        films: [
+          participantMatch(sortField),
+          { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
+          { $limit: limit }
+        ],
+        axisTotal: [participantMatch(sortField), { $count: 'total' }],
+        // Нужен только для подсказки fallback, но считается всегда: одна
+        // лишняя ветка дешевле второго round-trip.
+        vibeTotal: [participantMatch(SORT_AXES.vibe), { $count: 'total' }]
+      }
+    }
+  ]);
 
-    res.json({ films: films.map(film => withPosterUrl(film, req)), sort: sortField, limit });
-  } catch (error) {
-    throw error;
-  }
+  const films     = result.films || [];
+  const total     = result.axisTotal?.[0]?.total || 0;
+  const vibeTotal = result.vibeTotal?.[0]?.total || 0;
+
+  // DECISION: B2/3C — пустой топ отдаётся пустым. Молчаливой подмены на
+  // vibe-топ нет: иначе пользователь читал бы числа вайба как топ по
+  // техническому. Вместо подмены — честный признак, что vibe-топ есть и его
+  // можно предложить по явному клику.
+  const fallback = {
+    sort: 'vibe',
+    available: total === 0 && sortField !== SORT_AXES.vibe && vibeTotal > 0
+  };
+
+  res.json({
+    films: films.map(film => withPosterUrl(shapeFilmAggregates(film), req)),
+    sort: sortField,
+    limit,
+    total,
+    fallback
+  });
 }));
 
 // GET /api/films/search-by-title
@@ -98,53 +102,35 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
 }));
 
 // GET /api/films/:id
+// DECISION: B2/6.1 — на странице фильма отсутствующее среднее отдаётся нулём
+// (язык B1: 0 = «не вычислено», DECISION 2A), а не null и не отсутствием поля:
+// фронт показывает на нём «Нет оценок». В списках и топах то же отсутствие
+// отдаётся null, потому что там старый фронт рисует null как «—», а 0 нарисовал
+// бы красное «0.0». Разница намеренная.
 router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
-  try {
-    const film = await Film.findById(req.params.id);
-    if (!film) throw new NotFoundError('Фильм не найден');
+  const [film] = await Film.aggregate([
+    { $match: { _id: new mongoose.Types.ObjectId(String(req.params.id)) } },
+    ...FILM_STATS_STAGES
+  ]);
+  if (!film) throw new NotFoundError('Фильм не найден');
 
-    const ratingData = await Rating.aggregate([
-      { $match: { filmId: film._id, weight: { $ne: 0 } } },
-      {
-        $group: {
-          _id: null,
-          avgTechnical: { $avg: '$technicalScore' },
-          avgVibe:      { $avg: '$vibe' },
-          avgCombined:  { $avg: '$combinedScore' },
-          total:        { $sum: 1 }
-        }
-      }
-    ]);
-
-    const avgTechnical = ratingData[0]?.avgTechnical || 0;
-    const avgVibe      = ratingData[0]?.avgVibe      || 0;
-    const avgCombined  = ratingData[0]?.avgCombined  || 0;
-    const votesCount   = ratingData[0]?.total        || 0;
-
-    let userRating = null;
-    const token = extractBearer(req);
-    if (token) {
-      try {
-        const decoded = verifyAccessToken(token);
-        userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
-      } catch { /* игнор */ }
-    }
-
-    res.json({
-      ...withPosterUrl(film, req),
-      averageRating:   roundTenth(avgTechnical),
-      averageVibe:     roundTenth(avgVibe),
-      averageCombined: roundTenth(avgCombined),
-      votesCount,
-      userRating: userRating
-        ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
-        : null
-    });
-  } catch (error) {
-    throw error;
+  let userRating = null;
+  const token = extractBearer(req);
+  if (token) {
+    try {
+      const decoded = verifyAccessToken(token);
+      userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
+    } catch { /* игнор */ }
   }
+
+  res.json({
+    ...withPosterUrl(shapeFilmDetail(film), req),
+    userRating: userRating
+      ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
+      : null
+  });
 }));
 
 // GET /api/films/:id/ratings
@@ -220,58 +206,40 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
 }));
 
 // GET /api/films
+// DECISION: B2/6A — каталог показывает ВСЕ фильмы, включая неоценённые: иначе
+// только что импортированный фильм исчезает из выдачи. Неоценённые идут в конце
+// с averageTechnical = null и votesCount = 0, а total считает все фильмы — это
+// и есть фильтр каталога, поэтому total честен относительно него.
+// DECISION: B2/2B — sort=new даёт точку входа для свежих импортов. Это
+// nice-to-have, а не затычка: 6A делает такие фильмы видимыми и без него,
+// поэтому убрать sort=new можно без дыры в контракте.
 router.get('/', asyncHandler(async (req, res, next) => {
-  try {
-    const sort  = req.query.sort || 'technical';
-    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-    const skip  = (page - 1) * limit;
+  const sort  = req.query.sort || 'technical';
+  const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
+  const skip  = (page - 1) * limit;
 
-    let sortField;
-    switch (sort) {
-      case 'combined': sortField = 'averageCombined'; break;
-      case 'vibe':     sortField = 'averageVibe';     break;
-      case 'technical':
-      default:         sortField = 'averageRating';   break;
-    }
+  const isNew     = sort === 'new';
+  const sortField = sortFieldFor(sort);
 
-    const films = await Film.aggregate([
-      {
-        $lookup: {
-          from: 'ratings',
-          let: { filmId: '$_id' },
-          pipeline: [
-            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
-            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
-            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
-          ],
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating:   { $avg: '$ratings.technicalScore' },
-          averageVibe:     { $avg: '$ratings.vibe' },
-          averageCombined: { $avg: '$ratings.combinedScore' },
-          votesCount:      { $size: '$ratings' }
-        }
-      },
-      { $project: { ratings: 0 } },
-      { $sort: { [sortField]: -1, _id: 1 } },
-      { $skip: skip },
-      { $limit: limit }
-    ]);
+  const pipeline = [...FILM_STATS_STAGES];
+  pipeline.push(
+    isNew
+      ? { $sort: { createdAt: -1, _id: -1 } }
+      : { $sort: { [sortField]: -1, _id: 1 } }
+  );
+  pipeline.push({ $skip: skip }, { $limit: limit });
 
-    const total = await Film.countDocuments();
+  const [films, total] = await Promise.all([
+    Film.aggregate(pipeline),
+    Film.countDocuments()
+  ]);
 
-    res.json({
-      films: films.map(film => withPosterUrl(film, req)),
-      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-      sort: sortField
-    });
-  } catch (error) {
-    throw error;
-  }
+  res.json({
+    films: films.map(film => withPosterUrl(shapeFilmAggregates(film), req)),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    sort: isNew ? 'createdAt' : sortField
+  });
 }));
 
 // POST /api/films/import

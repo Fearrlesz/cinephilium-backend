@@ -63,17 +63,15 @@ test('buildPosterUrl falls back to TMDB when the proxy base is unset', () => {
 });
 
 test('GET /api/films/:id includes a posterUrl based on posterPath', async () => {
-  const originalFindById = Film.findById;
-  const originalAggregate = Rating.aggregate;
+  // /api/films/:id собирает средние и документ одним Film.aggregate (B2),
+  // поэтому подменяем именно его: тест про постеры, а не про Mongo.
+  const originalAggregate = Film.aggregate;
   const filmId = '507f1f77bcf86cd799439011';
-  Film.findById = async () => ({
+  Film.aggregate = async () => ([{
     _id: filmId,
     posterPath: '/abc.jpg',
-    toObject() {
-      return { _id: filmId, posterPath: this.posterPath, poster: '' };
-    }
-  });
-  Rating.aggregate = async () => [];
+    poster: ''
+  }]);
 
   try {
     const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
@@ -85,8 +83,7 @@ test('GET /api/films/:id includes a posterUrl based on posterPath', async () => 
     );
     assert.equal(film.posterPath, '/abc.jpg');
   } finally {
-    Film.findById = originalFindById;
-    Rating.aggregate = originalAggregate;
+    Film.aggregate = originalAggregate;
   }
 });
 
@@ -316,21 +313,12 @@ test('buildPosterUrl нормализует базу прокси (слэш и �
 
 test('легаси-poster с прямой ссылкой TMDB отдаётся через прокси', async () => {
   const filmId = '507f1f77bcf86cd799439013';
-  const originalFindById = Film.findById;
-  const originalAggregate = Rating.aggregate;
-  Film.findById = async () => ({
+  const originalAggregate = Film.aggregate;
+  Film.aggregate = async () => ([{
     _id: filmId,
     posterPath: '',
-    poster: 'https://image.tmdb.org/t/p/w500/legacy.jpg',
-    toObject() {
-      return {
-        _id: filmId,
-        posterPath: this.posterPath,
-        poster: this.poster
-      };
-    }
-  });
-  Rating.aggregate = async () => [];
+    poster: 'https://image.tmdb.org/t/p/w500/legacy.jpg'
+  }]);
 
   try {
     const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
@@ -344,8 +332,7 @@ test('легаси-poster с прямой ссылкой TMDB отдаётся �
     );
     assert.equal(film.posterPath, '/legacy.jpg');
   } finally {
-    Film.findById = originalFindById;
-    Rating.aggregate = originalAggregate;
+    Film.aggregate = originalAggregate;
   }
 });
 
@@ -353,17 +340,12 @@ test('без IMAGE_PROXY_BASE_URL база прокси берётся из orig
   const originalBase = process.env.IMAGE_PROXY_BASE_URL;
   delete process.env.IMAGE_PROXY_BASE_URL;
   const filmId = '507f1f77bcf86cd799439014';
-  const originalFindById = Film.findById;
-  const originalAggregate = Rating.aggregate;
-  Film.findById = async () => ({
+  const originalAggregate = Film.aggregate;
+  Film.aggregate = async () => ([{
     _id: filmId,
     posterPath: '/request-origin.jpg',
-    poster: '',
-    toObject() {
-      return { _id: filmId, posterPath: this.posterPath, poster: this.poster };
-    }
-  });
-  Rating.aggregate = async () => [];
+    poster: ''
+  }]);
 
   try {
     const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
@@ -372,8 +354,7 @@ test('без IMAGE_PROXY_BASE_URL база прокси берётся из orig
     assert.equal(film.posterUrl, `${baseUrl}/api/tmdb-image?size=w500&path=%2Frequest-origin.jpg`);
   } finally {
     process.env.IMAGE_PROXY_BASE_URL = originalBase;
-    Film.findById = originalFindById;
-    Rating.aggregate = originalAggregate;
+    Film.aggregate = originalAggregate;
   }
 });
 
@@ -388,17 +369,12 @@ test('домен фронтенда в IMAGE_PROXY_BASE_URL игнорирует
   process.env.CLIENT_URL = frontend;
 
   const filmId = '507f1f77bcf86cd799439015';
-  const originalFindById = Film.findById;
-  const originalAggregate = Rating.aggregate;
-  Film.findById = async () => ({
+  const originalAggregate = Film.aggregate;
+  Film.aggregate = async () => ([{
     _id: filmId,
     posterPath: '/front-host.jpg',
-    poster: '',
-    toObject() {
-      return { _id: filmId, posterPath: this.posterPath, poster: this.poster };
-    }
-  });
-  Rating.aggregate = async () => [];
+    poster: ''
+  }]);
 
   try {
     const response = await requestFetch(`${baseUrl}/api/films/${filmId}`);
@@ -413,8 +389,7 @@ test('домен фронтенда в IMAGE_PROXY_BASE_URL игнорирует
     process.env.IMAGE_PROXY_BASE_URL = originalBase;
     process.env.CORS_ORIGIN = originalCors;
     process.env.CLIENT_URL = originalClient;
-    Film.findById = originalFindById;
-    Rating.aggregate = originalAggregate;
+    Film.aggregate = originalAggregate;
   }
 });
 

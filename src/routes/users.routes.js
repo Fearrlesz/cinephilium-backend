@@ -60,6 +60,10 @@ async function sendProfile(req, res, userId) {
       email: isOwnProfile ? user.email : undefined,
       isExclusive: user.nickname === EXCLUSIVE_NICKNAME
     },
+    // DECISION: B2/5B — разделение осей в профиле и ленте остаётся вне B2.
+    // Бэк уже отдаёт completeness рядом с баллами, поэтому «ноль как балл» —
+    // дефект отрисовки на фронте (F1), а не отсутствие данных в контракте.
+    // Менять 0 на null здесь нельзя: это отменило бы DECISION 2A.
     ratings: ratings.map(r => ({
       id: r._id,
       film: withPosterUrl(r.filmId, req),

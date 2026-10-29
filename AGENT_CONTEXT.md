@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.0).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.1).
 
 ### Ключевые продуктовые правила
 
@@ -41,9 +41,15 @@
    - Всем `User` проставлен `counters.vibes: 0` (если поля не было).
    - Повторно запускать не нужно; скрипт идемпотентен, но смысла нет.
 3. **Фронтенд ещё не обновлён под vibe/full.** Это следующая задача (F1).
-4. **Агрегаты фильмов (средние, топ, `votesCount`) ещё не обновлены под B1.**
-   Это B2. До B2 vibe-оценки с `technicalScore = 0` попадают в `$avg` и занижают средние.
-5. **Старые 112 тестов + 14 новых = 126, все зелёные** (см. §8).
+4. **B2 — агрегаты фильмов — реализован в этой ветке.**
+   - Средний вайб считается по **всем** оценкам; `averageTechnical` и `averageCombined` —
+     только по `completeness: 'full'`. Vibe-ноль больше не «отравляет» техническое среднее.
+   - Три счётчика: `votesCount` (vibe + full), `vibesCount`, `fullCount`.
+   - В топах участвуют только те, у кого есть число по оси; `total` в топе считает
+     участников. Каталог `/films` по-прежнему показывает все фильмы, `sort=new` — по дате.
+   - Отличие намеренное: страница фильма отдаёт `0` как маркер (язык B1), списки и топы —
+     `null`, чтобы старый фронт рисовал «—», а не красное «0.0» (DECISION B2/6.1).
+5. **140 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -292,11 +298,14 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **126**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js`.
-- `tests/vibe-rating.test.js` использует `mongodb-memory-server` — внешняя Mongo не нужна:
+- Всего **140**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+  + 14 в `tests/film-aggregates.test.js` (B2).
+- `tests/vibe-rating.test.js` и `tests/film-aggregates.test.js` используют
+  `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
-  npm run test:vibe    # 14/14
+  npm run test:vibe          # 14/14
+  npm run test:aggregates    # 14/14
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -315,6 +324,11 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   достижения, `completeness` во всех выдачах, отсутствие утечки `vibeWindow`/
   `vibeCreatedAt`, повторная full без двойных баллов, миграция.
 
+- Что покрыто B2-тестами (`film-aggregates.test.js`): смешанные оценки (вайб по всем,
+  технический только по full), только vibe, только full, фильм без оценок, `weight: 0`
+  не влияет ни на что, участники топа по каждой оси, `total` по фильтру, единое
+  округление до десятых, алиас `averageRating`, `sort=new`, пустой топ с `fallback`.
+
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
 
@@ -327,7 +341,8 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 - Vibe: 50/24ч на пользователя.
 - `weight` — из `User.trustWeight` при создании; при апгрейде **сохраняется**
   из существующей записи.
-- Агрегаты фильмов (`$lookup`) фильтруют `weight: { $ne: 0 }`.
+- Агрегаты фильмов (`$lookup`) фильтруют `weight: { $ne: 0 }` — это касается всех трёх
+  средних и всех трёх счётчиков. Фильтр не убирать.
 - Списки `/films/:id/ratings` и `/films/:id/users` тоже фильтруют `weight: 0`.
 - `/api/top/users` исключает `flagged: true`.
 - Детектор: `scripts/flag-sybil-accounts.js`.
@@ -338,22 +353,27 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 10. Что дальше (roadmap)
 
-### B2 — агрегаты (следующая задача)
+### B2 — агрегаты (сделано)
 
-Сейчас `$avg` по `technicalScore`/`combinedScore` включает vibe-оценки с нулями.
-Нужно решить/сделать:
+Две оси разведены: `averageVibe` по всем, `averageTechnical`/`averageCombined` только по
+`completeness: 'full'`, три счётчика (`votesCount` = vibe + full, `vibesCount`, `fullCount`).
+Топы ранжируют только участников оси и считают `total` по фильтру. Каталог показывает все
+фильмы, `sort=new` — по дате. `averageRating` — алиас `averageTechnical` (DECISION B2/1A).
+Подробности и список решений — CHANGELOG 5.1.
 
-- средние и топ считать только по `completeness: 'full'` (или иначе, но осознанно);
-- `votesCount` — решить, считать ли vibe;
-- карточки фильма, `/films`, `/films/top`, `/films/:id`, `/films/:id/ratings`,
-  `/films/:id/users`;
-- оценки в профиле/ленте не должны выглядеть как «0».
+Следующему агенту важно: `0` на странице фильма и `null` в списках/топах — это **намеренно**
+(DECISION B2/6.1), не баг и не «недоделка».
 
 ### F1 — фронтенд
 
 - Лайт-форма: один слайдер vibe.
 - Полная форма: vibe предзаполнен из лайта.
-- Показывать «только vibe» и «полная», не рисовать 0 как балл.
+- Показывать «только vibe» и «полная», не рисовать 0 как балл: в профиле и ленте фронт
+  берёт `rating.combinedScore ?? rating.finalScore` и рисует `0`, хотя `completeness`
+  рядом уже приходит (DECISION B2/5B — это F1, а не B2).
+- Показать три счётчика на странице фильма (`votesCount` / `vibesCount` / `fullCount`).
+- Пустой топ: `films: []`, `total: 0`, `fallback.available` — рисовать сообщение и, если
+  есть чем заполнить, кнопку перехода на vibe-топ.
 - Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
   нужен нормальный текст/иконка.
 - README фронтенда/CHANGELOG обновить.
@@ -383,7 +403,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1
+## 12. Карта файлов P1 и B2
 
 | Файл | Что важно |
 |---|---|
@@ -391,25 +411,27 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `src/models/User.js` | `counters.vibes`, `vibeWindow` |
 | `src/models/Event.js` | тип `vibe` |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления |
-| `src/routes/films.routes.js` | `completeness` в `userRating` и списках |
-| `src/routes/users.routes.js` | `completeness` в профиле, прогресс с `vibes` |
+| `src/utils/filmAggregates.js` | B2: одна цепочка стадий на страницу, каталог и топ; `weight: { $ne: 0 }`, оси, три счётчика, `null` в списках |
+| `src/routes/films.routes.js` | B2: `/films` (все фильмы, `sort=new`), `/films/top` (участники оси + `total`/`fallback`), `/:id` (0 как маркер, алиас `averageRating`) |
+| `src/routes/users.routes.js` | `completeness` в профиле, прогресс с `vibes`; профиль/лента — вне B2 (5B) |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
 | `src/utils/counterMaintenance.js` | `counters.ratings` = full, `counters.vibes` = vibe |
 | `src/utils/counters.js` | поле `vibes` в допустимых счётчиках |
 | `src/utils/helpers.js` | передача `counters` в достижения |
 | `scripts/migrate-p1-vibe-ratings.js` | миграция (выполнена) |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
+| `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/counters.test.js` | обновлён под `vibes` |
-| `README.md`, `CHANGELOG.md` | документация 5.0 |
+| `README.md`, `CHANGELOG.md` | документация 5.1 |
 
 ---
 
 ## 13. Быстрый чек-лист перед изменениями
 
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
-2. `npm run test:vibe` — 14/14 (без внешней Mongo).
-3. Если есть Mongo — `npm test` — 126/126; если нет — см. §8.
-4. Прочитать `// DECISION` в `Rating.js` и `ratings.routes.js`, чтобы не отменить
-   закрытые решения.
-5. Помнить: миграция уже на проде; агрегаты ещё «грязные» до B2; фронт ещё не знает
-   про vibe/full.
+2. `npm run test:vibe` и `npm run test:aggregates` — по 14/14 (внешняя Mongo не нужна).
+3. Если есть Mongo — `npm test` — 140/140; если нет — см. §8.
+4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`
+   и `films.routes.js`, чтобы не отменить закрытые решения.
+5. Помнить: миграция уже на проде; B2 закрыт; фронт ещё не знает про vibe/full;
+   `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг.
