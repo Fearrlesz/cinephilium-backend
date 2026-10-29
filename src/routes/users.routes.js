@@ -117,7 +117,11 @@ async function sendProfile(req, res, userId) {
     comments: comments.map(c => ({
       id: c._id,
       film: c.filmId,
-      text: c.text
+      text: c.text,
+      // B8: профиль отдаёт и комментарии к рецензиям, а filmId у них тоже заполнен.
+      // Без targetType фронт не отличит комментарий к фильму от ответа под рецензией.
+      targetType: c.targetType || 'film',
+      targetId: c.targetId || c.filmId
     }))
   });
 }

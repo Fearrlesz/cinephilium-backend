@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.7).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.8).
 
 ### Ключевые продуктовые правила
 
@@ -116,7 +116,22 @@
    - `flag-sybil-accounts.js` теперь трогает 4 места и **пересчитывает** `likesCount`
      затронутых фильмов (не инкремент) — идемпотентно.
    - Миграции `add-film-likes-fields` и `reconcile-film-likes` — до деплоя.
-11. **254 теста, все зелёные** (см. §8).
+11. **B8 — полиморфные комментарии (фильм | рецензия) — реализован в этой ветке.**
+   - `Comment.targetType` (`film`/`review`) + `targetId`; `filmId` остаётся legacy-полем
+     и заполняется сервером (у review — из рецензии). Не удалять: по нему работают
+     старый роут, профиль и агрегаты.
+   - POST без `targetType` считается `film` (совместимость со старым фронтом).
+   - Гейтинг B3 — **только** для `targetType: 'film'`; комментарий к рецензии оценки
+     не требует. Премодерация `pending` — для обоих типов.
+   - Черновик/отклонённая рецензия: посторонним `404`, автору и админу
+     `403 REVIEW_NOT_PUBLISHED`.
+   - Старый `GET /api/comments/:filmId` — только комментарии к фильму (иначе треды
+     рецензий протекают: у них `filmId` тоже заполнен).
+   - Чтение терпит немигрированные документы: отсутствующий `targetType` = `film`.
+   - `parentId`: тот же target, родитель `approved`, один уровень вложенности.
+   - Событие в ленту — только для комментариев к фильму (B8/7B).
+   - Миграция `scripts/migrate-comment-target.js` — до деплоя.
+12. **277 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -253,7 +268,9 @@ tests/                 node:test
   `tags` (1–30 символов, до 10, без модерации), `ratingId`/`reviewId` (опциональные
   ссылки, ставятся только по явному `watchId` при создании оценки/рецензии).
   **Много записей на пару user+film** — это пересмотры, а не дубликаты.
-- `Comment`: `text` <=1000, `parentId` — один уровень ответов.
+- `Comment` (B8 — полиморфный): `targetType` (`film`/`review`) + `targetId`, `text` <=1000,
+  `parentId` — один уровень ответов, `filmId` — legacy-поле, всегда заполнено
+  (у review — из рецензии). Индексы: `{filmId, createdAt}` и `{targetType, targetId, createdAt}`.
 - `Event`: типы `rating`, `vibe`, `review`, `comment`, `film_add`, `achievement`;
   `userId` — автор (B-PRIVACY, вариант A), `user` — ник для отображения.
   Создаётся **только** через `createEvent`: он требует `userId` и без него событие
@@ -385,12 +402,12 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **254**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **277**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
   + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
-  + 19 в `tests/film-likes.test.js` (B7).
-- Эти восемь файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8).
+- Эти девять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -401,6 +418,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:privacy       # 25/25
   npm run test:watchlist     # 17/17
   npm run test:likes         # 19/19
+  npm run test:targets       # 23/23
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -459,6 +477,14 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   вызовы, `liked` в карточке фильма для анонима и авторизованного, списки и
   приватность (404/владелец/админ), `weight: 0`, пометка и снятие пометки фермы,
   отсутствие события и влияния на достижения, лимит 201-го запроса, сверка и миграция.
+
+- Что покрыто B8-тестами (`comment-targets.test.js`): гейтинг только для `film`,
+  комментарий к рецензии без оценки, `pending`/`rejected` (404 посторонним,
+  403 автору/админу), игнор `filmId` из тела, правила `parentId` (другая цель,
+  pending-родитель, второй уровень), новый `GET /api/comments` и старый роут,
+  изоляция слоёв (комментарии к рецензиям не протекают в список фильма),
+  терпимость к немигрированным, лайк, модерация (событие только для film),
+  админ-очередь, видимость ника скрытого автора, миграция.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -564,12 +590,22 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 `User.counters.filmLikes` (личный, все лайки) — **разные числа**. Тест, где у одного
 из двух пользователей `filmLikes: 2`, означал бы баг.
 
-### B8 — полиморфные комментарии к рецензиям (следующая задача)
+### B8 — полиморфные комментарии (сделано)
 
-Не реализовано. Самая сложная итерация: меняет схему `Comment` (полиморфизм
-`targetType`), требует миграции и встраивает `canViewProfile` для комментариев
-к рецензиям скрытых авторов. Гейтинг B3 (комментарий требует оценки фильма)
-и приватность B-PRIVACY нужно переиспользовать, а не дублировать.
+`Comment` полиморфен: `targetType` (`film`/`review`) + `targetId`, `filmId` остаётся
+legacy-полем и заполняется сервером (у review — из рецензии). Гейтинг B3 — только для
+`film`; премодерация для обоих типов. Комментировать можно только `approved`-рецензию
+(посторонним 404, автору/админу 403 `REVIEW_NOT_PUBLISHED`; `rejected` — так же).
+Старый `GET /api/comments/:filmId` отдаёт только комментарии к фильму — иначе треды
+рецензий протекают. Событие в ленту — только для film. Подробности — CHANGELOG 5.8.
+
+### B9 — вкладки профиля (следующая задача)
+
+**Проверено по коду: не реализовано.** `GET /api/users/:id` отдаёт всё одним ответом
+(`user`, `ratings`, `reviews`, `comments`), раздельных `/:id/{ratings,reviews,comments}`
+нет. B8 от B9 не зависит, но F1 может захотеть вкладки. При реализации понадобится
+`canViewProfile` (личные разделы) и `targetType` у комментариев — он уже отдаётся
+в профиле, чтобы фронт отличал комментарий к фильму от ответа под рецензией.
 
 ### F1 — фронтенд
 
@@ -627,12 +663,13 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ---
 
-## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY, B6, B7
+## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY, B6, B7, B8
 
 | Файл | Что важно |
 |---|---|
 | `src/models/Rating.js` | `completeness`, `vibeCreatedAt`, `min: 0`, pre-validate full |
 | `src/models/Review.js` | `isSpoiler` (default false), `text` 350..15000, `ratingId` ставит сервер |
+| `src/models/Comment.js` | B8: `targetType`/`targetId`, `filmId` legacy (всегда заполнен), pre-validate, два индекса |
 | `src/models/Film.js` | `likesCount` — публичный агрегат сердечек (weight > 0), `min: 0` |
 | `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
 | `src/models/WatchlistItem.js` | B6: «хочу посмотреть»; одна запись на user+film (`unique`), три индекса |
@@ -655,8 +692,9 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `src/routes/reviews.routes.js` | B4: гейт по full, `ratingId` серверный, `isSpoiler`; необязательный `watchId` |
 | `src/routes/events.routes.js` | B-PRIVACY: фильтр `hideFromFeed` по `userId` |
 | `src/routes/top.routes.js` | B-PRIVACY: скрытые профили исключены |
-| `src/routes/admin.routes.js` | B4/5: в очереди рецензий спойлер не скрывается; события одобрения с `userId` |
-| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` и `/watchlist`, B7: `/me/likes` и `/:id/likes` |
+| `src/routes/admin.routes.js` | B4/5: спойлер в очереди не скрывается; B8: `targetType` в очереди, событие approve только для film |
+| `src/routes/comments.routes.js` | B8: нормализация цели, гейт B3 только для film, `GET /api/comments` с пагинацией, старый `/:filmId` только film, проверки `parentId` |
+| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` и `/watchlist`, B7: `/me/likes` и `/:id/likes`, B8: `targetType` у комментариев профиля |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
 | `src/utils/counterMaintenance.js` | `ratings` = full, `vibes` = vibe, `watches` = Watch, `watchlist` = WatchlistItem, `filmLikes` = FilmLike |
 | `src/utils/counters.js` | поля `vibes`, `watches`, `filmLikes` в допустимых счётчиках |
@@ -669,6 +707,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `scripts/add-film-likes-fields.js` | B7: `Film.likesCount` + `counters.filmLikes` |
 | `scripts/reconcile-film-likes.js` | B7: сверка `Film.likesCount` с `FilmLike` (weight > 0) |
 | `scripts/flag-sybil-accounts.js` | помечает фермы: `trustWeight`, `Rating.weight`, `FilmLike.weight` + пересчёт `likesCount` |
+| `scripts/migrate-comment-target.js` | B8: `targetType: 'film'` + `targetId = filmId` у старых комментариев |
 | `tests/vibe-rating.test.js` | 14 тестов B1 |
 | `tests/film-aggregates.test.js` | 14 тестов B2 (in-memory MongoDB) |
 | `tests/comment-gating.test.js` | 15 тестов B3 (in-memory MongoDB) |
@@ -677,9 +716,10 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 | `tests/privacy.test.js` | 25 тестов B-PRIVACY (in-memory MongoDB) |
 | `tests/watchlist.test.js` | 17 тестов B6 (in-memory MongoDB) |
 | `tests/film-likes.test.js` | 19 тестов B7 (in-memory MongoDB) |
+| `tests/comment-targets.test.js` | 23 теста B8 (in-memory MongoDB) |
 | `tests/counters.test.js` | `vibes`/`watches`/`watchlist`/`filmLikes` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
-| `README.md`, `CHANGELOG.md` | документация 5.7 |
+| `README.md`, `CHANGELOG.md` | документация 5.8 |
 
 ---
 
@@ -689,21 +729,23 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
    `npm run test:gating` (15/15), `npm run test:reviews` (15/15),
    `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
-   `npm run test:watchlist` (17/17) и `npm run test:likes` (19/19) — внешняя Mongo
-   не нужна.
-3. Если есть Mongo — `npm test` — 254/254; если нет — см. §8.
+   `npm run test:watchlist` (17/17), `npm run test:likes` (19/19) и
+   `npm run test:targets` (23/23) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 277/277; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
-   `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `reviews.routes.js`,
-   `admin.routes.js`, `Watch.js`, `watches.routes.js`, `WatchlistItem.js`,
-   `watchlist.routes.js`, `FilmLike.js`, `privacy.js` и `users.routes.js`,
-   чтобы не отменить закрытые решения.
-5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-, B6- и B7-миграции выполняются при
-   деплое; B2–B7 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
+   `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `Comment.js`,
+   `reviews.routes.js`, `admin.routes.js`, `Watch.js`, `watches.routes.js`,
+   `WatchlistItem.js`, `watchlist.routes.js`, `FilmLike.js`, `privacy.js`
+   и `users.routes.js`, чтобы не отменить закрытые решения.
+5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-, B6-, B7- и B8-миграции выполняются
+   при деплое; B2–B8 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
-   комментарий без оценки даёт 403 до валидации тела — это тоже намеренно;
+   комментарий к фильму без оценки даёт 403 до валидации тела — это намеренно,
+   а комментарий к рецензии гейтингом НЕ облагается (B8);
    минимум рецензии 350 — решение заказчика, а не забытый порог;
    `watchesCount` считает и `weight: 0` — тоже намеренно (B5/6);
    событие создаётся только через `createEvent` с `userId`, иначе его не скрыть (B-PRIVACY);
    `counters.watchlist` и `counters.filmLikes` — реальные счётчики, а не `unsupportedCounters`
    (иначе reconcile обнулит: он делает `$set: { counters }` целиком);
-   `Film.likesCount` ≠ `User.counters.filmLikes` (публичный агрегат vs личные действия).
+   `Film.likesCount` ≠ `User.counters.filmLikes` (публичный агрегат vs личные действия);
+   старый `GET /api/comments/:filmId` обязан фильтровать `targetType: 'film'` (B8).

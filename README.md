@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.7. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.8. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -237,7 +237,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
 | `watchlistitems` | userId, filmId, addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId}` |
 | `filmlikes` | userId, filmId, weight (снимок trustWeight), addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId, weight}` |
-| `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
+| `comments` | userId, filmId (legacy, всегда заполнен), targetType (`film`/`review`), targetId, text (<=1000), likes, parentId, status | `{filmId, createdAt}`, `{targetType, targetId, createdAt}` |
 | `events` | type, user, userId (автор, B-PRIVACY), film, filmId, score, contentId, metadata | `createdAt`, `{userId, createdAt}` |
 | `privacychangelogs` | userId, field (hideProfile/hideFromFeed), oldValue, newValue, changedAt, ip | TTL 180 дней, `{userId, changedAt}` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
@@ -356,8 +356,9 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
 | POST | `/api/reviews/:id/like` | access | лайк, +5 автору |
-| POST | `/api/comments` | access + оценка фильма | комментарий или ответ; без оценки фильма — `403 RATING_REQUIRED_FOR_COMMENT` |
-| GET | `/api/comments/:filmId` | — | комментарии с ответами; свой черновик видит автор |
+| POST | `/api/comments` | access | `{ targetType, targetId, text, parentId? }`; без `targetType` считается `film`; для `film` нужна оценка фильма — `403 RATING_REQUIRED_FOR_COMMENT` |
+| GET | `/api/comments?targetType=film\|review&targetId=…` | — | `{ items, pagination }`, корни + ответы; без `targetType` → 400 |
+| GET | `/api/comments/:filmId` | — | старый формат (массив), **только** комментарии к фильму |
 | POST | `/api/comments/:id/like` | access | лайк, +1 автору (не гейтится) |
 
 Ошибки `POST /api/ratings` для двухступенчатой оценки:
@@ -400,6 +401,26 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 `?spoiler` на бэке нет: список отдаётся целиком, скрытие — дело фронта (DECISION B4/4).
 В админ-очереди спойлер показывается полным текстом — модератор должен прочитать его
 целиком (DECISION B4/5). Минимум текста остаётся 350 символов.
+
+### Комментарии к рецензиям (B8)
+
+Два независимых слоя обсуждения: под фильмом и под рецензией. `Comment` полиморфен —
+`targetType: 'film' | 'review'` + `targetId`; `filmId` остаётся legacy-полем (у комментария
+к рецензии он заполняется из рецензии, поэтому «все комментарии фильма» возможны).
+
+| Правило | Как работает |
+|---|---|
+| Гейтинг B3 | только для `targetType: 'film'`; комментарий к рецензии оценки не требует |
+| Премодерация | `pending` → `approved`/`rejected` для обоих типов |
+| Черновик рецензии | комментировать нельзя: посторонним `404`, автору и админу `403 REVIEW_NOT_PUBLISHED`; `rejected` — так же |
+| `filmId` в теле | для `targetType: 'review'` игнорируется: источник истины — `review.filmId` |
+| Старый роут | `GET /api/comments/:filmId` — только комментарии к фильму, формат не менялся |
+| Ответы | тот же `targetType`/`targetId`, родитель `approved`, один уровень вложенности |
+| Лента | событие создаётся только для комментариев к фильму |
+| Счётчик под рецензией | не денормализуется: `countDocuments` по индексу |
+
+POST без `targetType` считается комментарием к фильму (`targetId` из `targetId` или
+`filmId`) — так задеплоенный фронт продолжает работать до деплоя F-серии.
 
 ### Дневник просмотров (B5)
 
@@ -553,13 +574,15 @@ npm run test:watches     # только B5, тоже со своей in-memory M
 npm run test:privacy     # только B-PRIVACY, тоже со своей in-memory MongoDB
 npm run test:watchlist   # только B6, тоже со своей in-memory MongoDB
 npm run test:likes       # только B7, тоже со своей in-memory MongoDB
+npm run test:targets     # только B8, тоже со своей in-memory MongoDB
 ```
 
-254 теста на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+277 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
 14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
 15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`,
-17 в `watchlist.test.js` и 19 в `film-likes.test.js` — эти восемь сами поднимают
-in-memory MongoDB. У каждого файла своя БД, поэтому параллельный запуск безопасен.
+17 в `watchlist.test.js`, 19 в `film-likes.test.js` и 23 в `comment-targets.test.js` —
+эти девять сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому
+параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -578,6 +601,7 @@ in-memory MongoDB. У каждого файла своя БД, поэтому п
 | `tests/privacy.test.js` | 25 |
 | `tests/watchlist.test.js` | 17 |
 | `tests/film-likes.test.js` | 19 |
+| `tests/comment-targets.test.js` | 23 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -600,6 +624,9 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 `POST`/`DELETE` (включая двойные одновременные), `liked` в карточке фильма,
 списки и приватность, `weight: 0`, пометка и снятие пометки фермы, лимит,
 сверка и миграция.
+`comment-targets.test.js`: `npm run test:targets` — гейтинг только для film,
+комментарии к рецензии без оценки, pending/rejected, игнор `filmId`, правила
+`parentId`, новый и старый роуты, изоляция слоёв, модерация, миграция.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -792,6 +819,20 @@ node scripts/reconcile-film-likes.js
 долечить этим же скриптом (он идемпотентен). `counters.filmLikes` считает и
 `counterMaintenance.js` — иначе `$set: { counters }` обнулил бы его.
 
+### B8 — полиморфные комментарии
+
+```bash
+node scripts/migrate-comment-target.js --dry-run
+# ожидаемо: [migrate-comment-target] dry-run: comments без targetType=N, film-комментариев без targetId=0
+node scripts/migrate-comment-target.js
+# ожидаемо: [migrate-comment-target] обновлено: targetType+targetId=N, targetId=0
+```
+
+Без миграции старые комментарии не имеют `targetType`/`targetId`. Чтение их терпит
+(отсутствующий тип считается `film`), но новые выборки по `targetId` и второй индекс
+рассчитаны на заполненные поля — поэтому миграция обязательна. Скрипт идемпотентен,
+повторный прогон печатает нули.
+
 ---
 
 ## 12. Деплой
@@ -850,6 +891,7 @@ node scripts/add-event-userid.js          # B-PRIVACY: Event.userId по ник�
 node scripts/add-watchlist-counters.js    # B6: counters.watchlist по факту
 node scripts/add-film-likes-fields.js     # B7: Film.likesCount + counters.filmLikes
 node scripts/reconcile-film-likes.js      # B7: сверка публичного счётчика лайков
+node scripts/migrate-comment-target.js    # B8: targetType/targetId у комментариев
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
