@@ -399,12 +399,12 @@ test('публичный профиль не показывает чужие ч�
     title: 'Черновик', text: 'x'.repeat(500), status: 'pending'
   });
 
-  const anonymous = await call(`/api/users/${author._id}`);
+  const anonymous = await call(`/api/users/${author._id}/reviews`);
   assert.equal(anonymous.status, 200);
-  assert.equal(anonymous.json.reviews.length, 0, 'аноним видит черновики');
+  assert.equal(anonymous.json.items.length, 0, 'аноним видит черновики');
 
-  const owner = await call(`/api/users/${author._id}`, { token: signAccessToken(author._id) });
-  assert.equal(owner.json.reviews.length, 1);
+  const owner = await call(`/api/users/${author._id}/reviews`, { token: signAccessToken(author._id) });
+  assert.equal(owner.json.items.length, 1);
 });
 
 test('ответ на комментарий другого фильма отклоняется', async () => {
@@ -750,12 +750,12 @@ test('сквозной сценарий фронтенда: регистраци
   assert.equal(myReviews.status, 200);
   assert.equal(myReviews.json.length, 1);
 
-  const publicProfile = await call(`/api/users/${me.json._id}`);
+  const publicProfile = await call(`/api/users/${me.json._id}/reviews`);
   assert.equal(publicProfile.status, 200);
-  assert.equal(publicProfile.json.reviews.length, 0, 'чужой видит черновик');
+  assert.equal(publicProfile.json.items.length, 0, 'чужой видит черновик');
 
-  const ownProfile = await call(`/api/users/${me.json._id}`, { token });
-  assert.equal(ownProfile.json.reviews.length, 1);
+  const ownProfile = await call(`/api/users/${me.json._id}/reviews`, { token });
+  assert.equal(ownProfile.json.items.length, 1);
 
   const byNickname = await call('/api/users/nickname/' + encodeURIComponent('Путешественник'));
   assert.equal(byNickname.status, 200);

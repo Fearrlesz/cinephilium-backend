@@ -74,6 +74,11 @@ const userSchema = new mongoose.Schema({
   // при этом остаётся агрегатным и продолжает считать все записи (см. роут фильма).
   diaryPrivate:   { type: Boolean, default: false },
   achievements:   { type: [String], default: [] },
+  // DECISION: B9/pinned-achievement — закреплённое достижение хранится строкой
+  // из `achievements` (например, «🎬 Первый шаг»), а не ObjectId/ссылкой:
+  // достижения и так строки, отдельная коллекция не нужна. Без индекса —
+  // выборок по этому полю нет, оно читается только вместе с пользователем.
+  pinnedAchievement: { type: String, default: null },
   consent:        { type: consentSchema, default: null },
   registeredIp:   { type: String, default: '' },
   // Вес голоса в агрегатах. 0 — оценки аккаунта не влияют на средние

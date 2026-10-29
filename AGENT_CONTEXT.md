@@ -20,7 +20,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.8).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.9).
 
 ### Ключевые продуктовые правила
 
@@ -131,7 +131,22 @@
    - `parentId`: тот же target, родитель `approved`, один уровень вложенности.
    - Событие в ленту — только для комментариев к фильму (B8/7B).
    - Миграция `scripts/migrate-comment-target.js` — до деплоя.
-12. **277 тестов, все зелёные** (см. §8).
+12. **B9 — вкладки профиля и закреплённое достижение — реализован в этой ветке.**
+   - `GET /api/users/:id` — только карточка `{ user: { …, counters, pinnedAchievement,
+     achievementsCount } }`. Массивы `ratings`, `reviews`, `comments`, `watches`,
+     `achievements` удалены (DECISION B9/1B) — осознанно ломающее изменение.
+   - Вкладки `GET /api/users/:id/{ratings,reviews,comments}` — `{ items, pagination }`,
+     `canViewProfile` → 404, статус-фильтр (approved для чужих, всё для владельца/админа).
+     `:id = me` работает для всех трёх.
+   - `/ratings` — все оценки (vibe + full) с `completeness`, сортировка по дате;
+     `counters.ratings` (только full) не равен `pagination.total` (все) — намеренно.
+   - `/comments` — оба `targetType`; у review-комментария `target` — популенная рецензия,
+     у film — `null`.
+   - `User.pinnedAchievement: String | null` (без индекса) + `PUT/GET
+     /api/users/me/pinned-achievement`; `400 ACHIEVEMENT_NOT_EARNED` для неполученного;
+     потерянное достижение читается как `null` с `[WARN]`.
+   - Миграция `scripts/add-pinned-achievement.js` — нужна до деплоя.
+   - **298 тестов, все зелёные** (см. §8).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -402,12 +417,13 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **277**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **298**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
   + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
-  + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8).
-- Эти девять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8)
+  + 21 в `tests/profile-tabs.test.js` (B9).
+- Эти десять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -419,6 +435,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:watchlist     # 17/17
   npm run test:likes         # 19/19
   npm run test:targets       # 23/23
+  npm run test:tabs          # 21/21
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -485,6 +502,14 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   изоляция слоёв (комментарии к рецензиям не протекают в список фильма),
   терпимость к немигрированным, лайк, модерация (событие только для film),
   админ-очередь, видимость ника скрытого автора, миграция.
+
+- Что покрыто B9-тестами (`profile-tabs.test.js`): карточка без legacy-массивов,
+  пагинация и `completeness` в `/ratings`, сортировка по дате, `counters.ratings`
+  против `pagination.total`, status-фильтр в `/reviews` и `/comments`, оба
+  `targetType`, `:id = me`, 404 скрытого профиля для всех трёх вкладок,
+  pinnedAchievement (установка/снятие/`ACHIEVEMENT_NOT_EARNED`/потерянное достижение),
+  порядок роутов, нетронутые `/watches`, `/watchlist`, `/likes`, `/achievements`,
+  миграция.
 
 - Счётчики: `tests/counters.test.js` обновлён под `counters.vibes` и
   `completeness`-фильтры.
@@ -599,21 +624,26 @@ legacy-полем и заполняется сервером (у review — из
 Старый `GET /api/comments/:filmId` отдаёт только комментарии к фильму — иначе треды
 рецензий протекают. Событие в ленту — только для film. Подробности — CHANGELOG 5.8.
 
-### B9 — вкладки профиля (следующая задача)
+### B9 — вкладки профиля и закреплённое достижение (сделано)
 
-**Проверено по коду: не реализовано.** `GET /api/users/:id` отдаёт всё одним ответом
-(`user`, `ratings`, `reviews`, `comments`), раздельных `/:id/{ratings,reviews,comments}`
-нет. B8 от B9 не зависит, но F1 может захотеть вкладки. При реализации понадобится
-`canViewProfile` (личные разделы) и `targetType` у комментариев — он уже отдаётся
-в профиле, чтобы фронт отличал комментарий к фильму от ответа под рецензией.
+`GET /api/users/:id` — компактная карточка `{ user: { …, counters, pinnedAchievement,
+achievementsCount } }`; массивы `ratings`, `reviews`, `comments`, `watches`,
+`achievements` удалены (DECISION B9/1B, фронт ломается осознанно). Вкладки
+`GET /api/users/:id/{ratings,reviews,comments}` — `{ items, pagination }`,
+`canViewProfile` → `404 PROFILE_HIDDEN`, `approved` для чужих, всё для владельца/админа;
+`:id = me` — свои. `/ratings` — vibe + full с `completeness`, сортировка по дате;
+`counters.ratings` (только full) намеренно не равен `pagination.total` (все).
+`pinnedAchievement` — строка из `achievements`, `PUT/GET /me/pinned-achievement`,
+`400 ACHIEVEMENT_NOT_EARNED`, потерянное достижение → `null` + `[WARN]`.
+Миграция `scripts/add-pinned-achievement.js` — до деплоя. Подробности — CHANGELOG 5.9.
 
 ### F1 — фронтенд
 
 - Лайт-форма: один слайдер vibe.
 - Полная форма: vibe предзаполнен из лайта.
-- Показывать «только vibe» и «полная», не рисовать 0 как балл: в профиле и ленте фронт
-  берёт `rating.combinedScore ?? rating.finalScore` и рисует `0`, хотя `completeness`
-  рядом уже приходит (DECISION B2/5B — это F1, а не B2).
+- Показывать «только vibe» и «полная», не рисовать 0 как балл: во вкладке оценок
+  профиля и в ленте фронт берёт `rating.combinedScore ?? rating.finalScore` и рисует
+  `0`, хотя `completeness` рядом уже приходит (DECISION B2/5B — это F1, а не B2).
 - Показать три счётчика на странице фильма (`votesCount` / `vibesCount` / `fullCount`).
 - Пустой топ: `films: []`, `total: 0`, `fallback.available` — рисовать сообщение и, если
   есть чем заполнить, кнопку перехода на vibe-топ.
@@ -632,8 +662,13 @@ legacy-полем и заполняется сервером (у review — из
   из записи дневника.
 - Приватность (B-PRIVACY): тумблеры `hideProfile`/`hideFromFeed` через
   `GET/PUT /api/users/me/privacy`; профиль рисует заглушку при `user.isHidden` (ник +
-  аватар + «профиль скрыт»); на `404 PROFILE_HIDDEN` у достижений/дневника и
+  аватар + «профиль скрыт»); на `404 PROFILE_HIDDEN` у достижений/дневника/вкладок B9 и
   `403 DIARY_PRIVATE` — свои состояния, а не пустой экран.
+- Профиль (B9): карточка `GET /api/users/:id` + вкладки
+  `GET /api/users/:id/{ratings,reviews,comments}` с пагинацией; `:id = me` для своих.
+  Массивов в карточке больше нет — фронт должен перейти на вкладки (1B, ломающее).
+  Витрина закреплённого достижения: `user.pinnedAchievement`, настройка через
+  `GET/PUT /api/users/me/pinned-achievement`; при скрытом профиле полей нет.
 - Событие `vibe` в `ActivityFeed` сейчас падает в fallback-текст («сделал что-то»);
   нужен нормальный текст/иконка.
 - README фронтенда/CHANGELOG обновить.
@@ -663,7 +698,7 @@ legacy-полем и заполняется сервером (у review — из
 
 ---
 
-## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY, B6, B7, B8
+## 12. Карта файлов P1, B2, B3, B4, B5, B-PRIVACY, B6, B7, B8, B9
 
 | Файл | Что важно |
 |---|---|
@@ -674,7 +709,7 @@ legacy-полем и заполняется сервером (у review — из
 | `src/models/Watch.js` | B5: дневник; много записей на user+film, `tags`, `ratingId`/`reviewId`, три индекса |
 | `src/models/WatchlistItem.js` | B6: «хочу посмотреть»; одна запись на user+film (`unique`), три индекса |
 | `src/models/FilmLike.js` | B7: сердечко; одна запись на user+film (`unique`), `weight` — снимок trustWeight |
-| `src/models/User.js` | `counters.vibes`, `counters.watches`, `counters.watchlist`, `counters.filmLikes`, `privacy`, `diaryPrivate`, `vibeWindow` |
+| `src/models/User.js` | `counters.vibes`, `counters.watches`, `counters.watchlist`, `counters.filmLikes`, `privacy`, `diaryPrivate`, `vibeWindow`, B9: `pinnedAchievement` (String \| null, без индекса) |
 | `src/models/Event.js` | `userId` автора (B-PRIVACY) + `{userId, createdAt}`; тип `watch` НЕ добавлялся (B5/5) |
 | `src/models/PrivacyChangeLog.js` | лог флагов, TTL 180 дней |
 | `src/routes/ratings.routes.js` | лайт/full, кап, апгрейд, начисления; необязательный `watchId` (B5/2) |
@@ -685,7 +720,8 @@ legacy-полем и заполняется сервером (у review — из
 | `src/utils/diaryQuery.js` | общая выдача дневника для `/watches/me`, `/watches/user/:id`, `/users/:id/watches` |
 | `src/utils/watchlistQuery.js` | B6: общая выдача watchlist (`/watchlist/user`, `/users/:id/watchlist`) |
 | `src/utils/filmLikesQuery.js` | B7: общая выдача «Понравившихся» (`/users/me/likes`, `/users/:id/likes`); `weight` наружу не отдаётся |
-| `src/utils/paging.js` | общая пагинация списков (дневник, watchlist) |
+| `src/utils/profileTabsQuery.js` | B9: выдача вкладок `/users/:id/{ratings,reviews,comments}`; `{ items, pagination }`, `completeness`, статус-фильтр снаружи, `target` для review-комментария |
+| `src/utils/paging.js` | общая пагинация списков (дневник, watchlist, лайки, вкладки B9) |
 | `src/routes/films.routes.js` | B2: `/films`, `/films/top`, `/:id` (0 как маркер, `averageRating`, `watchesCount`); B7: `POST`/`DELETE /:id/like`, `liked` и `likesCount` в карточке |
 | `src/routes/watches.routes.js` | B5: создание/удаление/списки, `DIARY_PRIVATE`, `/:filmId/count`, гейт скрытого профиля |
 | `src/routes/watchlist.routes.js` | B6: идемпотентные `POST`/`DELETE`, `check`, свой список; `watchlistLimiter` |
@@ -694,7 +730,8 @@ legacy-полем и заполняется сервером (у review — из
 | `src/routes/top.routes.js` | B-PRIVACY: скрытые профили исключены |
 | `src/routes/admin.routes.js` | B4/5: спойлер в очереди не скрывается; B8: `targetType` в очереди, событие approve только для film |
 | `src/routes/comments.routes.js` | B8: нормализация цели, гейт B3 только для film, `GET /api/comments` с пагинацией, старый `/:filmId` только film, проверки `parentId` |
-| `src/routes/users.routes.js` | профиль (заглушка/полный), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` и `/watchlist`, B7: `/me/likes` и `/:id/likes`, B8: `targetType` у комментариев профиля |
+| `src/routes/users.routes.js` | профиль-карточка (B9: без массивов, `pinnedAchievement`, `achievementsCount`), `/me/privacy`, `/nickname`, достижения 404, `/users/:id/watches` и `/watchlist`, B7: `/me/likes` и `/:id/likes`, B9: вкладки `/:id/{ratings,reviews,comments}` (`:id = me`), `GET/PUT /me/pinned-achievement` |
+| `scripts/add-pinned-achievement.js` | B9: `pinnedAchievement: null` всем, у кого поля нет; идемпотентно, `--dry-run` |
 | `src/utils/achievements.js` | `effective`, пороги, `FIRST_VIBE`, `FIRST_FRAME` |
 | `src/utils/counterMaintenance.js` | `ratings` = full, `vibes` = vibe, `watches` = Watch, `watchlist` = WatchlistItem, `filmLikes` = FilmLike |
 | `src/utils/counters.js` | поля `vibes`, `watches`, `filmLikes` в допустимых счётчиках |
@@ -717,9 +754,10 @@ legacy-полем и заполняется сервером (у review — из
 | `tests/watchlist.test.js` | 17 тестов B6 (in-memory MongoDB) |
 | `tests/film-likes.test.js` | 19 тестов B7 (in-memory MongoDB) |
 | `tests/comment-targets.test.js` | 23 теста B8 (in-memory MongoDB) |
+| `tests/profile-tabs.test.js` | 21 тест B9 (in-memory MongoDB) |
 | `tests/counters.test.js` | `vibes`/`watches`/`watchlist`/`filmLikes` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
-| `README.md`, `CHANGELOG.md` | документация 5.8 |
+| `README.md`, `CHANGELOG.md` | документация 5.9 |
 
 ---
 
@@ -729,16 +767,16 @@ legacy-полем и заполняется сервером (у review — из
 2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
    `npm run test:gating` (15/15), `npm run test:reviews` (15/15),
    `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
-   `npm run test:watchlist` (17/17), `npm run test:likes` (19/19) и
-   `npm run test:targets` (23/23) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 277/277; если нет — см. §8.
+   `npm run test:watchlist` (17/17), `npm run test:likes` (19/19),
+   `npm run test:targets` (23/23) и `npm run test:tabs` (21/21) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 298/298; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `Comment.js`,
    `reviews.routes.js`, `admin.routes.js`, `Watch.js`, `watches.routes.js`,
-   `WatchlistItem.js`, `watchlist.routes.js`, `FilmLike.js`, `privacy.js`
-   и `users.routes.js`, чтобы не отменить закрытые решения.
-5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-, B6-, B7- и B8-миграции выполняются
-   при деплое; B2–B8 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
+   `WatchlistItem.js`, `watchlist.routes.js`, `FilmLike.js`, `privacy.js`,
+   `profileTabsQuery.js` и `users.routes.js`, чтобы не отменить закрытые решения.
+5. Помнить: миграции P1 и B5 уже прошли, B-PRIVACY-, B6-, B7-, B8- и B9-миграции
+   выполняются при деплое; B2–B9 и B-PRIVACY закрыты; фронт ещё не знает про vibe/full;
    `0` на странице фильма и `null` в списках — это намеренная разница (6.1), не баг;
    комментарий к фильму без оценки даёт 403 до валидации тела — это намеренно,
    а комментарий к рецензии гейтингом НЕ облагается (B8);

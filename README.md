@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 5.8. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.9. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -83,7 +83,7 @@ src/config/            env.js (конфиг), cors.js, scoring.js (формул�
 src/middleware/        auth.js, security.js, errorHandler.js, validate.js
 src/models/            User, Invite, ContactRequest, Film, Rating, Review, Comment, Event, Action, Session
 src/routes/            по одному файлу на домен
-src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, helpers, points, telegram, counterMaintenance, asyncHandler
+src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, helpers, points, telegram, counterMaintenance, privacy, paging, profileTabsQuery, asyncHandler
 api/tmdb-image.js      прокси постеров (Vercel + Express)
 scripts/               миграции и обслуживание данных
 tests/                 node:test, у каждого файла своя БД
@@ -228,7 +228,7 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), privacy (hideProfile, hideFromFeed), diaryPrivate, achievements, consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), privacy (hideProfile, hideFromFeed), diaryPrivate, achievements, pinnedAchievement (строка из achievements, B9), consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
 | `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy, likesCount (публичный агрегат, weight > 0) | `tmdbId` unique |
@@ -527,6 +527,7 @@ user+film (уникальный индекс), в отличие от дневн
   у `GET /api/users/nickname/:nickname` — та же заглушка без обёртки `user`.
 - `GET /api/users/:id/achievements` и `GET /api/users/:id/watches` при скрытом профиле
   отдают `404 PROFILE_HIDDEN`: достижения и дневник — личные разделы, а не «страница».
+  Вкладки `ratings`/`reviews`/`comments` ведут себя так же (B9).
 - `GET /api/events` исключает события авторов с `hideFromFeed`; фильтрация на чтении —
   снял флаг, события вернулись.
 - `GET /api/top/users` исключает скрытые профили.
@@ -534,12 +535,54 @@ user+film (уникальный индекс), в отличие от дневн
   `GET /api/watches/:filmId/count` приватностью не гейтятся.
 - Лог изменений — коллекция `PrivacyChangeLog`, TTL 180 дней.
 
+### Вкладки профиля и закреплённое достижение (B9)
+
+Карточка профиля компактная. `GET /api/users/:id` отдаёт только
+`{ user: { …, counters, pinnedAchievement, achievementsCount } }`; массивов
+`ratings`, `reviews`, `comments`, `watches`, `achievements` в ответе больше нет.
+**DECISION B9/1B:** это осознанно ломающее изменение — вкладки переехали в отдельные
+эндпоинты, а двойной формат («массивы + вкладки») не поддерживается даже на релиз.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/users/:id/ratings` | — (скрытый → 404) | `{ items, pagination }`; vibe + full, `completeness` в каждом; `film` популен; сортировка по дате |
+| GET | `/api/users/:id/reviews` | — (скрытый → 404) | `{ items, pagination }`; `status: approved` для чужих, всё для владельца/админа |
+| GET | `/api/users/:id/comments` | — (скрытый → 404) | `{ items, pagination }`; оба `targetType`, `targetType` в каждом; у review популена цель |
+| GET | `/api/users/me/pinned-achievement` | access | `{ pinnedAchievement }` — текущее значение |
+| PUT | `/api/users/me/pinned-achievement` | access | `{ achievement: string \| null }`; `null` снимает закрепление |
+
+Правила:
+
+- `:id = me` — свои вкладки (`DECISION B9/7A`). Отдельных `/me/ratings` и т.п. нет:
+  `me` разрешается тем же роутом по токену: без токена — `401 UNAUTHORIZED`.
+- Пагинация — общая `utils/paging.js`: `page` (с 1), `limit` (1..100, по умолчанию 20),
+  ответ `{ items, pagination: { page, limit, total, pages } }`.
+- Статус-фильтр: чужой зритель видит только `approved`; владелец и админ — всё,
+  включая `pending`/`rejected`.
+- Скрытый профиль: все три вкладки отдают `404 PROFILE_HIDDEN` (как дневник, watchlist
+  и «Понравившиеся»). Публичные эндпоинты контента (`GET /api/reviews/:filmId`,
+  `GET /api/comments?targetType=…`) при этом не меняются: скрыт профиль, а не текст.
+- `/ratings` отдаёт **все** оценки (vibe + full). `counters.ratings` считает только
+  полные, поэтому он намеренно не равен `pagination.total` этой вкладки; `counters.vibes`
+  с числом vibe-записей сходится. Это контракт, а не баг (`DECISION B9/2B+4A`).
+- В `/comments` у элемента есть `targetType`, `targetId` (id цели) и `target`:
+  для `review` — объект рецензии, для `film` — `null` (сам фильм уже в `film`).
+  Так `targetId` остаётся идентификатором независимо от типа цели.
+- `pinnedAchievement` — строка из `User.achievements` (например, «🎬 Первый шаг»),
+  не ObjectId и не ссылка; без индекса. `PUT` принимает только уже полученное
+  достижение, иначе `400 ACHIEVEMENT_NOT_EARNED`. Если запись потеряла достижение,
+  чтение отдаёт `null` и пишет `[WARN]`, не падая.
+- При скрытом профиле `pinnedAchievement` и `achievementsCount` не отдаются: в заглушке
+  только `id`, `nickname`, `avatar`, `isHidden`.
+
 ### Пользователи, топ, события, админ
 
 | Метод | Путь | Доступ |
 |---|---|---|
-| GET | `/api/users/:id` | — (email — только свой) |
+| GET | `/api/users/:id` | — (email — только свой) | карточка: `user` + `counters` + `pinnedAchievement` + `achievementsCount`, без массивов |
 | GET | `/api/users/nickname/:nickname` | — |
+| GET | `/api/users/:id/ratings` / `reviews` / `comments` | — (скрытый → 404) | вкладки профиля, `{ items, pagination }` |
+| GET/PUT | `/api/users/me/pinned-achievement` | access | закреплённое достижение |
 | GET | `/api/users/:id/achievements` | — |
 | GET | `/api/users/me/achievements` | access |
 | GET | `/api/top/users` | — (`{ items, pagination }`, без `flagged`) |
@@ -575,14 +618,15 @@ npm run test:privacy     # только B-PRIVACY, тоже со своей in-m
 npm run test:watchlist   # только B6, тоже со своей in-memory MongoDB
 npm run test:likes       # только B7, тоже со своей in-memory MongoDB
 npm run test:targets     # только B8, тоже со своей in-memory MongoDB
+npm run test:tabs        # только B9, тоже со своей in-memory MongoDB
 ```
 
-277 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+298 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
 14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
 15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`,
-17 в `watchlist.test.js`, 19 в `film-likes.test.js` и 23 в `comment-targets.test.js` —
-эти девять сами поднимают in-memory MongoDB. У каждого файла своя БД, поэтому
-параллельный запуск безопасен.
+17 в `watchlist.test.js`, 19 в `film-likes.test.js`, 23 в `comment-targets.test.js`
+и 21 в `profile-tabs.test.js` — эти десять сами поднимают in-memory MongoDB.
+У каждого файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -602,6 +646,7 @@ npm run test:targets     # только B8, тоже со своей in-memory M
 | `tests/watchlist.test.js` | 17 |
 | `tests/film-likes.test.js` | 19 |
 | `tests/comment-targets.test.js` | 23 |
+| `tests/profile-tabs.test.js` | 21 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -627,6 +672,12 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 `comment-targets.test.js`: `npm run test:targets` — гейтинг только для film,
 комментарии к рецензии без оценки, pending/rejected, игнор `filmId`, правила
 `parentId`, новый и старый роуты, изоляция слоёв, модерация, миграция.
+`profile-tabs.test.js`: `npm run test:tabs` — карточка без legacy-массивов,
+пагинация и `completeness` в `/ratings`, сортировка по дате, `counters.ratings`
+против `pagination.total`, status-фильтр в `/reviews` и `/comments`, оба
+`targetType`, `:id = me`, 404 скрытого профиля для всех вкладок,
+pinnedAchievement (установка/снятие/ACHIEVEMENT_NOT_EARNED/потерянное достижение),
+порядок роутов, нетронутые разделы, миграция.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -833,6 +884,22 @@ node scripts/migrate-comment-target.js
 рассчитаны на заполненные поля — поэтому миграция обязательна. Скрипт идемпотентен,
 повторный прогон печатает нули.
 
+### B9 — закреплённое достижение
+
+```bash
+node scripts/add-pinned-achievement.js --dry-run
+# ожидаемо: [add-pinned-achievement] dry-run: users без pinnedAchievement=N, всего users=M
+node scripts/add-pinned-achievement.js
+# ожидаемо: [add-pinned-achievement] обновлено users=N, пропущено (поле уже есть)=M-N
+node scripts/add-pinned-achievement.js --dry-run
+# ожидаемо: users без pinnedAchievement=0
+```
+
+Скрипт только проставляет `pinnedAchievement: null` тем пользователям, у кого поля
+ещё нет. Уже закреплённые достижения и явные `null` не трогает, поэтому повторный
+прогон безопасен и даёт нули. Миграция нужна до деплоя B9: Mongoose прочитает
+отсутствующее поле как `null` и без неё, но миграция выравнивает документы.
+
 ---
 
 ## 12. Деплой
@@ -892,6 +959,7 @@ node scripts/add-watchlist-counters.js    # B6: counters.watchlist по факт
 node scripts/add-film-likes-fields.js     # B7: Film.likesCount + counters.filmLikes
 node scripts/reconcile-film-likes.js      # B7: сверка публичного счётчика лайков
 node scripts/migrate-comment-target.js    # B8: targetType/targetId у комментариев
+node scripts/add-pinned-achievement.js    # B9: pinnedAchievement=null у всех
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
@@ -908,9 +976,9 @@ node scripts/demo-registration.js               # демо-прогон реги
 - Нет удаления оценок/рецензий → награды не откатываются.
 - `updateAchievements` молча логирует ошибку, если соединение с Mongo не готово.
 - Достижения пересчитываются только при действиях, а не по расписанию.
-- В профиле и ленте vibe-оценки показываются как `0`: бэкенд уже отдаёт `completeness`
-  рядом с баллами, но старый фронт его не учитывает — это задача F1, не B2
-  (DECISION B2/5B). `0` на `null` там не меняем: это отменило бы DECISION 2A.
+- Во вкладке оценок профиля и в ленте vibe-оценки показываются как `0`: бэкенд уже
+  отдаёт `completeness` рядом с баллами, но старый фронт его не учитывает — это задача
+  F1, не B2 (DECISION B2/5B). `0` на `null` там не меняем: это отменило бы DECISION 2A.
 - Нет OpenAPI-схемы; контракт описан здесь и в тестах.
 
 ---

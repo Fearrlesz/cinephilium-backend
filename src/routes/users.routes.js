@@ -1,9 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const User    = require('../models/User');
-const Rating  = require('../models/Rating');
-const Review  = require('../models/Review');
-const Comment = require('../models/Comment');
 const PrivacyChangeLog = require('../models/PrivacyChangeLog');
 const { authenticate } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
@@ -11,14 +8,16 @@ const { writeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
 const { EXCLUSIVE_NICKNAME } = require('../config/env');
 const { getUserAchievements } = require('../utils/achievements');
-const { withPosterUrl } = require('../utils/poster');
 const { HIDDEN_FIELDS, privacyOf, canViewProfile, hiddenProfileStub } = require('../utils/privacy');
 const { listDiary } = require('../utils/diaryQuery');
 const { listWatchlist } = require('../utils/watchlistQuery');
 const { listLikes } = require('../utils/filmLikesQuery');
+const { listRatings, listReviews, listComments } = require('../utils/profileTabsQuery');
 
 const asyncHandler = require('../utils/asyncHandler');
-const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
+const {
+  NotFoundError, ValidationError, AppError, UnauthorizedError
+} = require('../utils/errors');
 const { checkValidation } = require('../utils/validate');
 
 const router = express.Router();
@@ -40,6 +39,72 @@ async function resolveViewer(req) {
   }
 }
 
+/**
+ * Закреплённое достижение с проверкой, что оно всё ещё получено.
+ *
+ * DECISION: B9/pinned-lost — если pinnedAchievement нет в achievements (такого
+ * быть не должно, но данные могут разъехаться), отдаём null и пишем [WARN],
+ * а не падаем и не показываем чужую «витрину».
+ */
+function resolvePinnedAchievement(user) {
+  const pinned = user?.pinnedAchievement || null;
+  if (!pinned) return null;
+
+  const earned = Array.isArray(user.achievements) ? user.achievements : [];
+  if (!earned.includes(pinned)) {
+    console.warn(
+      `[WARN] pinnedAchievement "${pinned}" отсутствует в achievements пользователя ${user?._id}`
+    );
+    return null;
+  }
+  return pinned;
+}
+
+/**
+ * Общий контекст вкладок профиля (B9): зритель, цель, приватность и
+ * статус-фильтр. Вызывается только из /:id/{ratings,reviews,comments}.
+ *
+ * DECISION: B9/7A — `:id = me` означает свои вкладки. Отдельные /me/ratings
+ * и т.п. не заводим: роут один, а зритель для `me` берётся из токена.
+ * DECISION: B9/status — чужие видят только approved; владелец и админ — всё,
+ * включая pending/rejected. Это тот же фильтр, что был в карточке профиля.
+ */
+async function loadTabContext(req) {
+  const requested = String(req.params.id || '');
+  const viewer = await resolveViewer(req);
+
+  if (requested === 'me' && !viewer) {
+    throw new UnauthorizedError('Требуется авторизация');
+  }
+
+  const userId = requested === 'me' ? viewer.userId : requested;
+
+  if (!mongoose.Types.ObjectId.isValid(userId)) {
+    throw new ValidationError('Неверный ID');
+  }
+
+  const target = await User.findById(userId).select('privacy');
+  if (!target) throw new NotFoundError('Пользователь не найден');
+
+  // DECISION: B9/privacy — все вкладки профиля (включая рецензии и комментарии)
+  // при скрытом профиле и зрителе без прав отдают 404 PROFILE_HIDDEN — так же,
+  // как дневник (retro-fit B5), watchlist (B6) и «Понравившиеся» (B7).
+  // Публичные эндпоинты контента (GET /api/reviews/:filmId, GET /api/comments)
+  // не меняются: скрыт профиль, а не опубликованный текст.
+  if (!canViewProfile(viewer, target)) {
+    throw new AppError('PROFILE_HIDDEN', 'Профиль скрыт', 404);
+  }
+
+  const isOwnProfile = Boolean(viewer) && String(viewer.userId) === String(target._id);
+  const isAdmin = Boolean(viewer?.isAdmin);
+
+  return {
+    target,
+    viewer,
+    statusFilter: isOwnProfile || isAdmin ? {} : { status: 'approved' }
+  };
+}
+
 async function sendProfile(req, res, userId) {
   const user = await User.findById(userId).select('-password');
   if (!user) throw new NotFoundError('Пользователь не найден');
@@ -49,24 +114,20 @@ async function sendProfile(req, res, userId) {
   // DECISION: B-PRIVACY/A2 — при скрытом профиле посторонний видит только
   // заглушку (E2): ник и аватар. Ни counters, ни достижений, ни оценок,
   // ни дневника в ответе нет — это личные разделы. Рецензии и комментарии
-  // продолжают жить там, где опубликованы (C2).
+  // продолжают жить там, где опубликованы (C2), но их вкладки в профиле
+  // закрыты по B9/privacy.
   if (!canViewProfile(viewer, user)) {
     return res.json({ user: hiddenProfileStub(user) });
   }
 
   const isOwnProfile = Boolean(viewer) && String(viewer.userId) === String(user._id);
-  const isAdmin = Boolean(viewer?.isAdmin);
 
-  // Чужие черновики и отклонённые материалы не показываем: полный список
-  // доступен только владельцу профиля и администратору.
-  const statusFilter = isOwnProfile || isAdmin ? {} : { status: 'approved' };
-
-  const ratings  = await Rating.find({ userId }).populate('filmId', 'title poster posterPath year');
-  const reviews  = await Review.find({ userId, ...statusFilter })
-    .populate('filmId', 'title poster posterPath year')
-    .populate('ratingId');
-  const comments = await Comment.find({ userId, ...statusFilter }).populate('filmId', 'title');
-
+  // DECISION: B9/1B — карточка профиля больше не отдаёт массивы ratings,
+  // reviews, comments, watches, achievements. Это осознанно ломающее изменение:
+  // вкладки переехали в отдельные пагинированные эндпоинты, а двойной формат
+  // («массивы + вкладки») не оставляем ни на релиз, ни под feature-flag.
+  // Фронт 3.9 сломается — так и задумано, чтобы обновление нельзя было забыть.
+  // Достижения остаются числом + закреплённым; полный список — в /:id/achievements.
   res.json({
     user: {
       id: user._id,
@@ -79,50 +140,11 @@ async function sendProfile(req, res, userId) {
       // B5: фронт должен знать, что дневник закрыт, иначе покажет пустоту
       // вместо «дневник закрыт». Само значение не секрет — это настройка видимости.
       diaryPrivate: user.diaryPrivate === true,
-      achievements: user.achievements || [],
+      pinnedAchievement: resolvePinnedAchievement(user),
+      achievementsCount: (user.achievements || []).length,
       email: isOwnProfile ? user.email : undefined,
       isExclusive: user.nickname === EXCLUSIVE_NICKNAME
-    },
-    // DECISION: B2/5B — разделение осей в профиле и ленте остаётся вне B2.
-    // Бэк уже отдаёт completeness рядом с баллами, поэтому «ноль как балл» —
-    // дефект отрисовки на фронте (F1), а не отсутствие данных в контракте.
-    // Менять 0 на null здесь нельзя: это отменило бы DECISION 2A.
-    ratings: ratings.map(r => ({
-      id: r._id,
-      film: withPosterUrl(r.filmId, req),
-      technicalScore: r.technicalScore,
-      combinedScore:  r.combinedScore,
-      vibe:           r.vibe,
-      completeness:   r.completeness || 'full',
-      genrePreset:    r.genrePreset,
-      blockWeights:   r.blockWeights,
-      scores:         r.scores,
-      textReview:     r.textReview,
-      createdAt:      r.createdAt
-    })),
-    reviews: reviews.map(r => ({
-      _id: r._id,
-      id: r._id,
-      film: withPosterUrl(r.filmId, req),
-      filmId: withPosterUrl(r.filmId, req),
-      ratingId: r.ratingId,
-      title: r.title,
-      text: r.text,
-      // B4: профиль перечисляет поля руками, поэтому флаг нужен здесь — иначе
-      // на профиле он бы тихо терялся (остальные ответы отдают документ целиком).
-      isSpoiler: r.isSpoiler === true,
-      likes: r.likes,
-      createdAt: r.createdAt
-    })),
-    comments: comments.map(c => ({
-      id: c._id,
-      film: c.filmId,
-      text: c.text,
-      // B8: профиль отдаёт и комментарии к рецензиям, а filmId у них тоже заполнен.
-      // Без targetType фронт не отличит комментарий к фильму от ответа под рецензией.
-      targetType: c.targetType || 'film',
-      targetId: c.targetId || c.filmId
-    }))
+    }
   });
 }
 
@@ -217,6 +239,37 @@ router.get('/me/likes', authenticate, asyncHandler(async (req, res) => {
   res.json(await listLikes(req.userId, req.query, req));
 }));
 
+// GET /api/users/me/pinned-achievement — текущее закреплённое достижение.
+// Объявлено ДО /:id/..., иначе "me" попадёт в :id и не пройдёт валидацию.
+router.get('/me/pinned-achievement', authenticate, asyncHandler(async (req, res) => {
+  const user = await User.findById(req.userId).select('achievements pinnedAchievement');
+  if (!user) throw new NotFoundError('Пользователь не найден');
+  res.json({ pinnedAchievement: resolvePinnedAchievement(user) });
+}));
+
+// PUT /api/users/me/pinned-achievement — { achievement: string | null }.
+// DECISION: B9/achievement-validation — строка должна ТОЧНО совпадать с одним из
+// User.achievements, иначе 400 ACHIEVEMENT_NOT_EARNED: закрепить можно только
+// полученное достижение. null снимает закрепление.
+// Свой профиль доступен владельцу всегда, поэтому hideProfile здесь не гейтит.
+router.put('/me/pinned-achievement', authenticate, writeLimiter, asyncHandler(async (req, res) => {
+  const achievement = req.body?.achievement;
+
+  if (achievement !== null && (typeof achievement !== 'string' || !achievement.trim())) {
+    throw new ValidationError('achievement должен быть непустой строкой или null');
+  }
+
+  const user = await User.findById(req.userId).select('achievements');
+  if (!user) throw new NotFoundError('Пользователь не найден');
+
+  if (achievement !== null && !(user.achievements || []).includes(achievement)) {
+    throw new AppError('ACHIEVEMENT_NOT_EARNED', 'Достижение не получено', 400);
+  }
+
+  await User.updateOne({ _id: req.userId }, { $set: { pinnedAchievement: achievement } });
+  res.json({ pinnedAchievement: achievement });
+}));
+
 // GET /api/users/nickname/:nickname — поиск профиля по никнейму (страница критика).
 // Отдаём компактный lookup: фронтенд использует его только чтобы получить _id.
 router.get('/nickname/:nickname', asyncHandler(async (req, res) => {
@@ -294,13 +347,40 @@ router.get('/:id/likes', validateObjectId('id'), asyncHandler(async (req, res, n
   res.json(await listLikes(target._id, req.query, req));
 }));
 
-// GET /api/users/:id
-router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
-  if (checkValidation(req, next)) return;
-  await sendProfile(req, res, req.params.id);
+// ─────────────────────────── ВКЛАДКИ ПРОФИЛЯ (B9) ───────────────────────────
+//
+// Один роут на вкладку: `:id` — ObjectId или `me` (DECISION B9/7A). Специфичные
+// /me/* объявлены выше, а здесь `me` обрабатывает loadTabContext, поэтому
+// отдельные /me/ratings, /me/reviews, /me/comments не нужны.
+//
+// DECISION: B9/1B — массивы из GET /api/users/:id удалены, вкладки живут только
+// здесь. Формат — { items, pagination }, пагинация — utils/paging.js.
+// DECISION: B9/2B+4A — /ratings отдаёт всё (vibe + full) с completeness;
+// counters.ratings (только full) намеренно не равен pagination.total.
+
+// GET /api/users/:id/ratings
+// Сортировка зафиксирована по дате (B9/3A), параметра ?sort= нет.
+router.get('/:id/ratings', asyncHandler(async (req, res) => {
+  const { target } = await loadTabContext(req);
+  res.json(await listRatings(target._id, req.query, req));
+}));
+
+// GET /api/users/:id/reviews — status = approved для чужих, всё для владельца/админа.
+router.get('/:id/reviews', asyncHandler(async (req, res) => {
+  const { target, statusFilter } = await loadTabContext(req);
+  res.json(await listReviews(target._id, req.query, statusFilter, req));
+}));
+
+// GET /api/users/:id/comments — оба targetType (film/review), targetType в каждом.
+router.get('/:id/comments', asyncHandler(async (req, res) => {
+  const { target, statusFilter } = await loadTabContext(req);
+  res.json(await listComments(target._id, req.query, statusFilter, req));
 }));
 
 // GET /api/users/:id/achievements
+// Должен быть объявлен до /:id только для читаемости: Express 5 сопоставляет
+// путь целиком, и /:id не перехватывает /:id/achievements. Но порядок
+// «специфичные раньше общего» соблюдаем сознательно.
 router.get('/:id/achievements', validateObjectId('id'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
@@ -313,6 +393,13 @@ router.get('/:id/achievements', validateObjectId('id'), asyncHandler(async (req,
   }
 
   await sendAchievements(res, req.params.id);
+}));
+
+// GET /api/users/:id — карточка профиля (B9: только user + counters +
+// pinnedAchievement + achievementsCount; массивы удалены по 1B).
+router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+  await sendProfile(req, res, req.params.id);
 }));
 
 module.exports = router;

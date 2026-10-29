@@ -1,6 +1,70 @@
-# Changelog — Cinephilium 5.8
+# Changelog — Cinephilium 5.9
 
 **Дата и время среза: 29.10.2026 (Europe/Moscow, UTC+03:00)**
+
+## 5.9 — B9: вкладки профиля и закреплённое достижение
+
+**Дата: 29.10.2026.**
+
+### Смысл
+
+Профиль перестаёт быть одним тяжёлым ответом. Карточка — компактная: пользователь,
+счётчики, закреплённое достижение и количество достижений. Оценки, рецензии и
+комментарии живут на отдельных вкладках с пагинацией, приватностью и статус-фильтром.
+Появляется «витрина»: одно достижение можно закрепить на карточке.
+
+### API
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/users/:id/ratings` | — (скрытый → 404) | `{ items, pagination }`, vibe + full, `completeness` в каждом, `film` популен |
+| GET | `/api/users/:id/reviews` | — (скрытый → 404) | `{ items, pagination }`, `status: approved` для чужих, всё для владельца/админа |
+| GET | `/api/users/:id/comments` | — (скрытый → 404) | `{ items, pagination }`, оба `targetType`, `targetType` в каждом |
+| GET | `/api/users/me/pinned-achievement` | access | `{ pinnedAchievement }` |
+| PUT | `/api/users/me/pinned-achievement` | access | `{ achievement: string \| null }` |
+
+`GET /api/users/:id` теперь отдаёт `{ user: { …, counters, pinnedAchievement,
+achievementsCount } }` без массивов `ratings`, `reviews`, `comments`, `watches`,
+`achievements`. `GET /api/users/:id/achievements` не менялся.
+
+### Зафиксированные решения
+
+- **B9/1B** — legacy-массивы удалены из `GET /api/users/:id` сразу, без «одного релиза»,
+  deprecated-режима и feature-flag. Фронт 3.9 сломается осознанно: так обновление
+  нельзя забыть, а двойной формат не тянется через релизы. Вкладки — единственный путь.
+- **B9/2B** — `/ratings` отдаёт и vibe, и full одним списком, `completeness` в каждом
+  элементе. `counters.vibes` сходится с числом vibe-записей.
+- **B9/3A** — сортировка только по дате (`createdAt desc`, затем `_id desc`).
+  Параметр `?sort=` не добавлялся: это была бы 3C.
+- **B9/4A** — `/ratings` отдаёт **все** оценки, поэтому `counters.ratings` (только full)
+  намеренно не равен `pagination.total` (все). Это не исправляется удалением vibe
+  из списка; `counters.vibes` — отдельный счётчик.
+- **B9/7A** — `:id = me` для своих вкладок. Новых `/me/*` нет, кроме
+  `/me/pinned-achievement`; `/me/likes` из B7 остаётся.
+- **B9/9A** — `/comments` включает оба `targetType` (`film` и `review`), `targetType`
+  есть в каждом элементе. У `review`-комментария `targetId` — id рецензии, а `target` —
+  популенная рецензия; у `film` `target: null`, фильм уже в `film`.
+- **B9/privacy** — при скрытом профиле без прав **все** вкладки отдают
+  `404 PROFILE_HIDDEN`, как дневник, watchlist и «Понравившиеся». Публичные
+  эндпоинты контента не меняются: скрыт профиль, а не опубликованный текст.
+- **B9/pinned-achievement** — `User.pinnedAchievement: String | null` (default `null`),
+  значение — строка из `achievements`, без индекса, без ObjectId и без ссылки.
+- **B9/achievement-validation** — `PUT` принимает только достижение, которое уже есть
+  в `User.achievements`; иначе `400 ACHIEVEMENT_NOT_EARNED`. `null` снимает закрепление.
+- **B9/pinned-lost** — если `pinnedAchievement` отсутствует в `achievements`, чтение
+  отдаёт `null` и пишет `[WARN]`, не падая.
+- **B9/profile-shape** — `pinnedAchievement` и `achievementsCount` живут в объекте
+  `user`, рядом с `counters`: карточка остаётся одним объектом. При скрытом профиле
+  заглушка их не содержит.
+- **B9/migration** — `scripts/add-pinned-achievement.js`: `pinnedAchievement: null`
+  всем, у кого поля нет; идемпотентно, `--dry-run`.
+
+### Тесты и миграция
+
+- `tests/profile-tabs.test.js` — 21 тест.
+- Всего 298 тестов, все зелёные.
+- `node scripts/add-pinned-achievement.js --dry-run` → apply → повторный `--dry-run`
+  даёт `без поля: N → 0`.
 
 ## 5.8 — B8: полиморфные комментарии (фильм | рецензия)
 

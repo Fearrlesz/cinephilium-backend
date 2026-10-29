@@ -362,8 +362,8 @@ test('isSpoiler: true сохраняется и отдаётся во всех �
   const mine = await call('/api/reviews/user', { token });
   assert.equal(mine.json[0].isSpoiler, true);
 
-  const profile = await call(`/api/users/${user._id}`, { token });
-  assert.equal(profile.json.reviews[0].isSpoiler, true, 'профиль потерял флаг');
+  const profile = await call(`/api/users/${user._id}/reviews`, { token });
+  assert.equal(profile.json.items[0].isSpoiler, true, 'профиль потерял флаг');
 
   const stored = await Review.findById(reviewId);
   assert.equal(stored.isSpoiler, true);

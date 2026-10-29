@@ -486,8 +486,8 @@ test('completeness отдаётся везде, где API возвращает 
   const details = await call(`/api/ratings/${ratingId}/details`);
   assert.equal(details.json.completeness, 'vibe');
 
-  const profile = await call(`/api/users/${user._id}`);
-  assert.equal(profile.json.ratings[0].completeness, 'vibe');
+  const profile = await call(`/api/users/${user._id}/ratings`);
+  assert.equal(profile.json.items[0].completeness, 'vibe');
 });
 
 test('повторная полная оценка не начисляет баллы второй раз', async () => {
