@@ -1,5 +1,5 @@
 // middleware/security.js
-// Централизованный набор middleware для безопасности Express-приложения.
+// Централизованный набор middleware для безопасности Express-приложения. 
 
 const net = require('node:net');
 const helmet = require('helmet');
