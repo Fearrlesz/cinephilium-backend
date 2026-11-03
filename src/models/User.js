@@ -11,11 +11,16 @@ const passwordResetSchema = new mongoose.Schema({
 
 const countersSchema = new mongoose.Schema({
   ratings: { type: Number, default: 0 },
+  // Сколько сейчас стоит именно vibe-оценок (без 15 критериев).
+  vibes: { type: Number, default: 0 },
   reviews: { type: Number, default: 0 },
   reviewsApproved: { type: Number, default: 0 },
   comments: { type: Number, default: 0 },
   commentsApproved: { type: Number, default: 0 },
   filmLikes: { type: Number, default: 0 },
+  // Сколько записей в дневнике просмотров (B5). Считает все записи, включая
+  // пересмотры: это история, а не уникальные фильмы.
+  watches: { type: Number, default: 0 },
   watchlist: { type: Number, default: 0 },
   followers: { type: Number, default: 0 },
   following: { type: Number, default: 0 },
@@ -29,6 +34,14 @@ const consentSchema = new mongoose.Schema({
   version: { type: String, default: '1.0' },
   acceptedAt: Date,
   ip: String
+}, { _id: false });
+
+// DECISION: B-PRIVACY/H1 — флаги приватности живут в User.privacy.
+// D1: два независимых флага. hideProfile — скрыть страницу профиля,
+// hideFromFeed — не показывать события автора в общей ленте.
+const privacySchema = new mongoose.Schema({
+  hideProfile:  { type: Boolean, default: false },
+  hideFromFeed: { type: Boolean, default: false }
 }, { _id: false });
 
 const userSchema = new mongoose.Schema({
@@ -55,14 +68,27 @@ const userSchema = new mongoose.Schema({
   passwordReset:  { type: passwordResetSchema, default: null },
   totalPoints:    { type: Number, default: 0 },
   counters:       { type: countersSchema, default: () => ({}) },
+  privacy:        { type: privacySchema, default: () => ({}) },
+  // DECISION: B5/3 — дневник по умолчанию открыт, но пользователь может его
+  // закрыть. Закрытый дневник не отдаётся другим; счётчик «N просмотров» фильма
+  // при этом остаётся агрегатным и продолжает считать все записи (см. роут фильма).
+  diaryPrivate:   { type: Boolean, default: false },
   achievements:   { type: [String], default: [] },
+  // DECISION: B9/pinned-achievement — закреплённое достижение хранится строкой
+  // из `achievements` (например, «🎬 Первый шаг»), а не ObjectId/ссылкой:
+  // достижения и так строки, отдельная коллекция не нужна. Без индекса —
+  // выборок по этому полю нет, оно читается только вместе с пользователем.
+  pinnedAchievement: { type: String, default: null },
   consent:        { type: consentSchema, default: null },
   registeredIp:   { type: String, default: '' },
   // Вес голоса в агрегатах. 0 — оценки аккаунта не влияют на средние
   // (выставляется скриптом flag-sybil-accounts для ферм).
   trustWeight:    { type: Number, default: 1, min: 0, max: 1 },
   flagged:        { type: Boolean, default: false },
-  registeredAt:   { type: Date, default: Date.now }
+  registeredAt:   { type: Date, default: Date.now },
+  // Скользящее окно созданных vibe-оценок для дневного капа (50/24ч).
+  // Служебное поле, наружу не отдаётся.
+  vibeWindow:     { type: [Date], default: undefined, select: false }
 });
 
 userSchema.index({ registeredIp: 1, registeredAt: -1 });

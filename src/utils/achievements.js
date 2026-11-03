@@ -7,11 +7,12 @@ const mongoose = require('mongoose');
 // ============================================================
 
 const ACHIEVEMENTS = {
+  FIRST_VIBE: '💭 Первое впечатление',
   FIRST_RATING: '🎬 Первый шаг',
-  RATING_10: '⭐ Кинолюбитель',
-  RATING_25: '🎯 Ценитель кино',
-  RATING_50: '🔥 Энтузиаст',
-  RATING_100: '👑 Кинолегенда',
+  RATING_20: '⭐ Кинолюбитель',
+  RATING_50: '🎯 Ценитель кино',
+  RATING_100: '🔥 Энтузиаст',
+  RATING_200: '👑 Кинолегенда',
   FIRST_REVIEW: '📝 Критик',
   REVIEW_5: '✍️ Мастер слова',
   FIRST_COMMENT: '💬 Первое слово',
@@ -19,14 +20,23 @@ const ACHIEVEMENTS = {
   FIRST_FRAME: '🎬 Первый кадр',
 };
 
-function getBasicAchievements(ratingsCount, reviewsCount, commentsCount) {
+// Одна глубокая оценка весит как пять vibe-оценок.
+function effectiveRatings(ratingsCount = 0, vibesCount = 0) {
+  return Number(ratingsCount) + Number(vibesCount) / 5;
+}
+
+function getBasicAchievements(ratingsCount = 0, vibesCount = 0, reviewsCount = 0, commentsCount = 0) {
   const earned = [];
 
-  if (ratingsCount >= 1)   earned.push(ACHIEVEMENTS.FIRST_RATING);
-  if (ratingsCount >= 10)  earned.push(ACHIEVEMENTS.RATING_10);
-  if (ratingsCount >= 25)  earned.push(ACHIEVEMENTS.RATING_25);
-  if (ratingsCount >= 50)  earned.push(ACHIEVEMENTS.RATING_50);
-  if (ratingsCount >= 100) earned.push(ACHIEVEMENTS.RATING_100);
+  // FIRST_RATING — именно за первую полную оценку, а не за 5 vibe.
+  if (ratingsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_RATING);
+  if (vibesCount >= 1) earned.push(ACHIEVEMENTS.FIRST_VIBE);
+
+  const effective = effectiveRatings(ratingsCount, vibesCount);
+  if (effective >= 20)  earned.push(ACHIEVEMENTS.RATING_20);
+  if (effective >= 50)  earned.push(ACHIEVEMENTS.RATING_50);
+  if (effective >= 100) earned.push(ACHIEVEMENTS.RATING_100);
+  if (effective >= 200) earned.push(ACHIEVEMENTS.RATING_200);
 
   if (reviewsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_REVIEW);
   if (reviewsCount >= 5) earned.push(ACHIEVEMENTS.REVIEW_5);
@@ -37,7 +47,7 @@ function getBasicAchievements(ratingsCount, reviewsCount, commentsCount) {
   return earned;
 }
 
-async function getSpecialAchievements(userId, db) {
+async function getSpecialAchievements(userId, db, ratingsCount = 0) {
   const earned = [];
 
   const uid = mongoose.Types.ObjectId.isValid(userId)
@@ -78,19 +88,26 @@ async function getSpecialAchievements(userId, db) {
     (u) => u._id.toString() === userId.toString()
   );
 
-  if (isFirstHundred) earned.push(ACHIEVEMENTS.FIRST_FRAME);
+  // «Первый кадр» — первый сотне и только тем, у кого есть хотя бы одна
+  // полная оценка. Уже выданные достижения не отбираются: updateAchievements
+  // только добавляет новые.
+  if (isFirstHundred && ratingsCount >= 1) earned.push(ACHIEVEMENTS.FIRST_FRAME);
 
   return earned;
 }
 
-async function getUserAchievements(userId, db, ratingsCount, reviewsCount, commentsCount) {
-  const basic = getBasicAchievements(ratingsCount, reviewsCount, commentsCount);
-  const special = await getSpecialAchievements(userId, db);
+async function getUserAchievements(userId, db, counters = {}, reviewsCount = 0, commentsCount = 0) {
+  const ratingsCount = Number(counters?.ratings) || 0;
+  const vibesCount = Number(counters?.vibes) || 0;
+
+  const basic = getBasicAchievements(ratingsCount, vibesCount, reviewsCount, commentsCount);
+  const special = await getSpecialAchievements(userId, db, ratingsCount);
   return [...new Set([...basic, ...special])];
 }
 
 module.exports = {
   ACHIEVEMENTS,
+  effectiveRatings,
   getBasicAchievements,
   getSpecialAchievements,
   getUserAchievements,

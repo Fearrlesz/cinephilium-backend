@@ -65,6 +65,9 @@ router.post('/make', [
 // ─── МОДЕРАЦИЯ ───────────────────────────────────────────
 
 // GET /api/admin/pending/comments
+// B8: в ответе есть targetType/targetId — у комментария к рецензии filmId тоже
+// заполнен (сервер берёт его из рецензии), поэтому заголовок фильма остаётся
+// в контексте, а модератор видит, к какому слою относится комментарий.
 router.get('/pending/comments', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
     const comments = await Comment.find({ status: 'pending' })
@@ -77,6 +80,9 @@ router.get('/pending/comments', authenticate, isAdmin, asyncHandler(async (req, 
 }));
 
 // GET /api/admin/pending/reviews
+// DECISION: B4/5 — рецензия со isSpoiler здесь отдаётся полным текстом: модератор
+// обязан прочитать её целиком, иначе не сможет принять решение. Скрытие спойлера —
+// только публичный фронт.
 router.get('/pending/reviews', authenticate, isAdmin, asyncHandler(async (req, res, next) => {
   try {
     const reviews = await Review.find({ status: 'pending' })
@@ -106,7 +112,21 @@ router.put('/comments/:id/approve', authenticate, isAdmin, asyncHandler(async (r
       const authorPoints = authorIsAdmin ? 10 : 2;
 
       await addPoints(comment.userId._id, comment.userId._id, 'comment', authorPoints, comment._id);
-      await createEvent('comment', comment.userId.nickname, comment.filmId.title, comment.filmId._id, null, comment._id);
+
+      // DECISION: B8/7B — событие в ленту только для комментариев к ФИЛЬМУ.
+      // Комментарий к рецензии — ответ автору в треде, а не активность для всех:
+      // лента не должна забиваться тредами под рецензиями (тот же принцип, что
+      // B7/event для лайков). Новый тип события тоже не заводим.
+      if ((comment.targetType || 'film') === 'film') {
+        await createEvent('comment', {
+          userId: comment.userId._id,
+          nickname: comment.userId.nickname,
+          film: comment.filmId.title,
+          filmId: comment.filmId._id,
+          contentId: comment._id
+        });
+      }
+
       await updateAchievements(comment.userId._id);
     }
 
@@ -147,7 +167,13 @@ router.put('/reviews/:id/approve', authenticate, isAdmin, asyncHandler(async (re
       const authorPoints = authorIsAdmin ? 50 : 30;
 
       await addPoints(review.userId._id, review.userId._id, 'review', authorPoints, review._id);
-      await createEvent('review', review.userId.nickname, review.filmId.title, review.filmId._id, null, review._id);
+      await createEvent('review', {
+        userId: review.userId._id,
+        nickname: review.userId.nickname,
+        film: review.filmId.title,
+        filmId: review.filmId._id,
+        contentId: review._id
+      });
       await updateAchievements(review.userId._id);
     }
 

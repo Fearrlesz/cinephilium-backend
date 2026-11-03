@@ -21,6 +21,32 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 const User = require('../src/models/User');
 const Rating = require('../src/models/Rating');
+const FilmLike = require('../src/models/FilmLike');
+const Film = require('../src/models/Film');
+
+/**
+ * Пересчитывает Film.likesCount для перечисленных фильмов: публичный счётчик
+ * считает только лайки с weight > 0 (DECISION B7/2A).
+ *
+ * DECISION: B7/recount — при пометке и снятии пометки выбран ПОЛНЫЙ ПЕРЕСЧЁТ
+ * затронутых фильмов, а не инкремент на «количество активных лайков».
+ * Причины: операция идемпотентна (повторный прогон не уводит счётчик),
+ * не накапливает дрейф при частичных сбоях и совпадает по логике с
+ * reconcile-film-likes.js. Фильмов у одного кластера немного, цена пересчёта мала.
+ */
+async function recomputeLikesCounts(filmIds = []) {
+  let films = 0;
+  let changed = 0;
+
+  for (const filmId of filmIds) {
+    const count = await FilmLike.countDocuments({ filmId, weight: { $gt: 0 } });
+    const result = await Film.updateOne({ _id: filmId }, { $set: { likesCount: count } });
+    films += 1;
+    changed += result.modifiedCount || 0;
+  }
+
+  return { films, changed };
+}
 
 async function findSybilClusters({ minAccounts = 5, windowHours = 1 } = {}) {
   const since = new Date(Date.now() - windowHours * 60 * 60 * 1000);
@@ -50,6 +76,8 @@ async function flagSybilAccounts({ minAccounts = 5, windowHours = 1, dryRun = fa
   const details = [];
   let flaggedUsers = 0;
   let ratingsUpdated = 0;
+  let likesUpdated = 0;
+  let filmsRecomputed = 0;
 
   for (const cluster of clusters) {
     const ids = cluster.userIds;
@@ -66,11 +94,30 @@ async function flagSybilAccounts({ minAccounts = 5, windowHours = 1, dryRun = fa
       { $set: { weight: 0 } }
     );
 
+    // B7: третье и четвёртое место — вес лайков и публичный счётчик фильмов.
+    // Без этого сердечки фермы остались бы в Film.likesCount навсегда.
+    const likeFilmIds = await FilmLike.distinct('filmId', { userId: { $in: ids } });
+    const likesResult = await FilmLike.updateMany(
+      { userId: { $in: ids } },
+      { $set: { weight: 0 } }
+    );
+    const recomputed = await recomputeLikesCounts(likeFilmIds);
+
     flaggedUsers += ids.length;
     ratingsUpdated += result.modifiedCount || 0;
+    likesUpdated += likesResult.modifiedCount || 0;
+    filmsRecomputed += recomputed.changed;
   }
 
-  return { clusters: clusters.length, flaggedUsers, ratingsUpdated, dryRun, details };
+  return {
+    clusters: clusters.length,
+    flaggedUsers,
+    ratingsUpdated,
+    likesUpdated,
+    filmsRecomputed,
+    dryRun,
+    details
+  };
 }
 
 async function unflagAll() {
@@ -82,7 +129,21 @@ async function unflagAll() {
     { weight: 0 },
     { $set: { weight: 1 } }
   );
-  return { unflaggedUsers: users.modifiedCount || 0, ratingsRestored: ratings.modifiedCount || 0 };
+
+  // B7: симметрично возвращаем вес лайкам и пересчитываем счётчики их фильмов.
+  const likeFilmIds = await FilmLike.distinct('filmId', { weight: 0 });
+  const likes = await FilmLike.updateMany(
+    { weight: 0 },
+    { $set: { weight: 1 } }
+  );
+  const recomputed = await recomputeLikesCounts(likeFilmIds);
+
+  return {
+    unflaggedUsers: users.modifiedCount || 0,
+    ratingsRestored: ratings.modifiedCount || 0,
+    likesRestored: likes.modifiedCount || 0,
+    filmsRecomputed: recomputed.changed
+  };
 }
 
 if (require.main === module) {
@@ -118,4 +179,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { findSybilClusters, flagSybilAccounts, unflagAll };
+module.exports = { findSybilClusters, flagSybilAccounts, unflagAll, recomputeLikesCounts };

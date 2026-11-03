@@ -3,7 +3,7 @@
 API кино-каталога: фильмы из TMDB, оценки по 15 критериям в 5 блоках, рецензии,
 комментарии, модерация и геймификация (баллы, достижения, рейтинг пользователей).
 
-Версия 4.3. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
+Версия 5.9. Подробный список изменений этой итерации — в [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 
@@ -83,7 +83,7 @@ src/config/            env.js (конфиг), cors.js, scoring.js (формул�
 src/middleware/        auth.js, security.js, errorHandler.js, validate.js
 src/models/            User, Invite, ContactRequest, Film, Rating, Review, Comment, Event, Action, Session
 src/routes/            по одному файлу на домен
-src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, helpers, points, telegram, counterMaintenance, asyncHandler
+src/utils/             jwt, cookies, tokens, counters, poster, errors, achievements, validate, helpers, points, telegram, counterMaintenance, privacy, paging, profileTabsQuery, asyncHandler
 api/tmdb-image.js      прокси постеров (Vercel + Express)
 scripts/               миграции и обслуживание данных
 tests/                 node:test, у каждого файла своя БД
@@ -150,6 +150,33 @@ Render/Cloudflare оказывается адресом edge-ноды Cloudflare
 Средние по фильму считаются в MongoDB (`$lookup` + `$avg`), а не в Node —
 поэтому в списке и топе они всегда согласованы с деталями.
 
+### Средние по фильму: две оси (B2)
+
+Vibe и полная оценка — разные оси, и агрегаты их не смешивают:
+
+| Поле | По каким оценкам | Если считать не из чего |
+|---|---|---|
+| `averageVibe` | по всем (vibe + full): вайб есть у обоих типов | `0` на странице, `null` в списке |
+| `averageTechnical` | только по `completeness: 'full'` | `0` на странице, `null` в списке |
+| `averageCombined` | только по `completeness: 'full'` | `0` на странице, `null` в списке |
+| `averageRating` | алиас `averageTechnical` (легаси-поле, DECISION B2/1A) | как у `averageTechnical` |
+| `votesCount` | все оценки, `weight != 0` (DECISION B2/4A) | `0` |
+| `vibesCount` | только vibe-оценки | `0` |
+| `fullCount` | только полные оценки | `0` |
+
+Ноль — маркер «не вычислено» (DECISION 2A), а не «плохо». На странице фильма он
+отдаётся честно, чтобы фронт показал «пока никто не разобрал подробно». В списках и
+топах отсутствующее число отдаётся `null`: старый фронт рисует его как «—», а `0`
+нарисовал бы красное «0.0». Это отличие намеренное (DECISION B2/6.1).
+
+Топы ранжируют только участников оси: по `technical`/`combined` — фильмы хотя бы с
+одной полной оценкой, по `vibe` — хотя бы с одной любой. `total` в топе считает
+участников, а каталог `/api/films` показывает все фильмы, и его `total` — все фильмы
+(DECISION B2/6A). Все три средних округляются до десятых.
+
+Оценки с `weight: 0` не участвуют ни в одном среднем, ни в одном счётчике и ни в одном
+топе — фильтр `weight: { $ne: 0 }` стоит в `$lookup`.
+
 ---
 
 ## 6. Аутентификация
@@ -201,14 +228,18 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Коллекция | Ключевые поля | Индексы |
 |---|---|---|
-| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters, achievements, consent, registeredIp, trustWeight, flagged | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
+| `users` | nickname*, password (bcrypt), email (необязательный контакт), telegram, avatar, isAdmin, invitedBy, passwordReset, totalPoints, counters (ratings, vibes, watches, …), privacy (hideProfile, hideFromFeed), diaryPrivate, achievements, pinnedAchievement (строка из achievements, B9), consent, registeredIp, trustWeight, flagged, vibeWindow (служебное) | `nickname` unique, `email` unique + sparse, `{registeredIp, registeredAt}`, `flagged` |
 | `invites` | codeHash*, codePrefix, note, createdBy, usedBy, usedAt, revokedAt, expiresAt | `codeHash` unique, `{usedAt, revokedAt, expiresAt}` |
 | `contactrequests` | nickname, contact, message, status (`new`/`approved`/`rejected`), ip, inviteId, reviewedBy, reviewedAt | `{status, createdAt}`, `{ip, createdAt}` |
-| `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy | `tmdbId` unique |
-| `ratings` | userId, filmId, genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore, textReview, likes, weight, ip | `{userId, filmId}` unique, `filmId`, `userId` |
-| `reviews` | userId, filmId, ratingId, title, text (350..15000), likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
-| `comments` | userId, filmId, text (<=1000), likes, parentId, status | `{filmId, createdAt}` |
-| `events` | type, user, film, filmId, score, contentId, metadata | `createdAt` |
+| `films` | tmdbId*, title, year, posterPath, poster (legacy), description, genres, director, actors, trailer, createdBy, likesCount (публичный агрегат, weight > 0) | `tmdbId` unique |
+| `ratings` | userId, filmId, completeness (`vibe`/`full`), genrePreset, blockWeights, scores (15 полей), vibe, technicalScore, combinedScore (0 = не вычислено), textReview, likes, weight, ip, vibeCreatedAt | `{userId, filmId}` unique, `filmId`, `userId`, `{userId, vibeCreatedAt}` |
+| `reviews` | userId, filmId, ratingId, title, text (350..15000), isSpoiler, likes, status | `{filmId, createdAt}`, `{userId, filmId}` unique |
+| `watches` | userId, filmId, watchedAt, isRewatch, tags (1–30 символов, до 10), ratingId, reviewId | `{userId, watchedAt}`, `{filmId}`, `{userId, filmId}` |
+| `watchlistitems` | userId, filmId, addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId}` |
+| `filmlikes` | userId, filmId, weight (снимок trustWeight), addedAt | `{userId, filmId}` unique, `{userId, addedAt}`, `{filmId, weight}` |
+| `comments` | userId, filmId (legacy, всегда заполнен), targetType (`film`/`review`), targetId, text (<=1000), likes, parentId, status | `{filmId, createdAt}`, `{targetType, targetId, createdAt}` |
+| `events` | type, user, userId (автор, B-PRIVACY), film, filmId, score, contentId, metadata | `createdAt`, `{userId, createdAt}` |
+| `privacychangelogs` | userId, field (hideProfile/hideFromFeed), oldValue, newValue, changedAt, ip | TTL 180 дней, `{userId, changedAt}` |
 | `actions` | userId, actorId, type, points, refId | `{userId, actorId, refId, type}` |
 | `sessions` | userId, tokenHash*, userAgent, ip, expiresAt (TTL) | `tokenHash` unique, `userId` |
 
@@ -223,7 +254,8 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 |---|---|
 | Регистрация | 10 аккаунтов/час с одного IP (считаются и успешные) + одноразовый инвайт-код на аккаунт |
 | Оценки | 40/час с одного IP, одна оценка на пару user+film |
-| Вес голоса | `Rating.weight` (0..1) копируется из `User.trustWeight` |
+| Vibe-оценки | 50 за скользящие 24 часа на пользователя; лимит проверяется атомарно до создания (`429 VIBE_LIMIT_REACHED`). Апгрейд vibe → full капом не ограничен |
+| Вес голоса | `Rating.weight` (0..1) копируется из `User.trustWeight` при создании; при апгрейде сохраняется вес существующей записи (включая `0`) |
 | Агрегаты | `$lookup` фильтрует `weight: { $ne: 0 }`, значит помеченные оценки не влияют на средние, топ фильмов и «votesCount» |
 | Рейтинг | `/api/top/users` исключает `flagged: true` |
 | Детектор | `scripts/flag-sybil-accounts.js`: кластеры `>= 5` аккаунтов за час с одного IP → `trustWeight = 0`, `weight = 0` |
@@ -233,6 +265,23 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 Списки `/api/films/:id/ratings` и `/api/films/:id/users` тоже фильтруют `weight: 0`,
 поэтому помеченные оценки не видны и в карточке фильма, а не только в средних.
+
+**Гейтинг комментариев (B3):** писать может только тот, кто оценил фильм —
+`403 RATING_REQUIRED_FOR_COMMENT` до валидации тела и до модерации. Лайки не гейтятся.
+Гейтинг не заменяет премодерацию, а работает до неё.
+
+**Гейтинг рецензий (B4):** строже — нужна полная оценка (15 критериев), иначе
+`403 FULL_RATING_REQUIRED_FOR_REVIEW`. `ratingId` ставит сервер, `isSpoiler` — флаг
+без влияния на модерацию.
+
+### Достижения
+
+- Вес прогресса: `effective = counters.ratings + counters.vibes / 5` (пять vibe = одна
+  полная). Пороги: 20 / 50 / 100 / 200.
+- `FIRST_RATING` — только за первую полную оценку; `FIRST_VIBE` — за первую vibe.
+- `FIRST_FRAME` — первые 100 зарегистрированных **и** хотя бы одна полная оценка.
+- Уже выданные достижения не отбираются: `updateAchievements` только добавляет новые.
+- На vibe `updateAchievements` не вызывается; пересчёт происходит на полной оценке.
 
 **Ограничение:** распределённая ферма (много IP и много инвайтов) так не ловится.
 Следующие шаги при необходимости: CAPTCHA (Turnstile/hCaptcha) на регистрацию, выдача инвайтов
@@ -280,36 +329,260 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| GET | `/api/films` | — | `page`, `limit` (<=100), `sort=technical|combined|vibe` |
-| GET | `/api/films/top` | — | `sort`, `limit` (<=20), только фильмы с оценками |
+| GET | `/api/films` | — | `page`, `limit` (<=100), `sort=technical\|combined\|vibe\|new`; все фильмы + средние и три счётчика |
+| GET | `/api/films/top` | — | `sort`, `limit` (<=20); только участники оси, плюс `total` и `fallback` |
 | GET | `/api/films/search-by-title` | — | `title`, регистронезависимый поиск |
-| GET | `/api/films/:id` | — | детали + средние + `userRating` (если есть токен) |
+| GET | `/api/films/:id` | — | детали + средние + `watchesCount` + `userRating` (если есть токен) |
 | GET | `/api/films/:id/ratings` | — | оценки фильма с авторами |
 | GET | `/api/films/:id/users` | — | кто оценивал |
 | POST | `/api/films/import` | access | импорт из TMDB, +2 балла (+5 админу) |
+
+`GET /api/films/top` отвечает `{ films, sort, limit, total, fallback }`. `total` — сколько
+фильмов участвует в этом топе, а не сколько их в базе. `fallback` — подсказка для пустого
+топа: `{ sort: 'vibe', available }`, где `available` истинно, только если vibe-топ есть
+чем заполнить. Молчаливой подмены сортировки нет: фронт предлагает перейти по клику.
+`sort=new` сортирует по дате добавления и нужен, чтобы только что импортированный фильм
+было где увидеть (DECISION B2/2B).
 
 ### Контент
 
 | Метод | Путь | Доступ | Описание |
 |---|---|---|---|
-| POST | `/api/ratings` | access | поставить/обновить оценку |
-| GET | `/api/ratings/user` | access | свои оценки |
-| GET | `/api/ratings/:id/details` | — | детали оценки |
-| POST | `/api/reviews` | access | рецензия (350..15000 символов), `ratingId` — своя оценка этого же фильма |
+| POST | `/api/ratings` | access | vibe-оценка `{filmId, vibe}` **или** полная `{filmId, vibe, scores, …}`; ответ содержит `completeness` |
+| GET | `/api/ratings/user` | access | свои оценки (с `completeness`) |
+| GET | `/api/ratings/:id/details` | — | детали оценки (с `completeness`) |
+| POST | `/api/reviews` | access + полная оценка | рецензия (350..15000 символов), `isSpoiler`; `ratingId` ставит сервер из своей оценки, без `completeness: 'full'` — `403 FULL_RATING_REQUIRED_FOR_REVIEW` |
 | GET | `/api/reviews/:filmId` | — | одобренные рецензии; свой черновик видит автор, всё — админ |
 | GET | `/api/reviews/details/:id` | — | одобренную — всем, черновик — автору/админу |
 | GET | `/api/reviews/user` | access | свои рецензии |
 | POST | `/api/reviews/:id/like` | access | лайк, +5 автору |
-| POST | `/api/comments` | access | комментарий или ответ |
-| GET | `/api/comments/:filmId` | — | комментарии с ответами; свой черновик видит автор |
-| POST | `/api/comments/:id/like` | access | лайк, +1 автору |
+| POST | `/api/comments` | access | `{ targetType, targetId, text, parentId? }`; без `targetType` считается `film`; для `film` нужна оценка фильма — `403 RATING_REQUIRED_FOR_COMMENT` |
+| GET | `/api/comments?targetType=film\|review&targetId=…` | — | `{ items, pagination }`, корни + ответы; без `targetType` → 400 |
+| GET | `/api/comments/:filmId` | — | старый формат (массив), **только** комментарии к фильму |
+| POST | `/api/comments/:id/like` | access | лайк, +1 автору (не гейтится) |
+
+Ошибки `POST /api/ratings` для двухступенчатой оценки:
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `ALREADY_FULL_RATING` | 400 | пришла vibe-оценка, а у пары user+film уже стоит полная |
+| `VIBE_LIMIT_REACHED` | 429 | больше 50 новых vibe за 24 часа; `details: { limit, window: '24h', retryAt }` |
+
+### Гейтинг комментариев (B3)
+
+Комментировать может только тот, кто оценил фильм — любой оценкой, vibe или full.
+Одна цифра 1–10 уже означает «смотрел, есть мнение». Правило одинаково для корневого
+комментария и для ответа: иначе обход «не могу начать тред, зато могу ответить в чужом».
+Лайки не гейтятся — это реакция, а не высказывание.
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `RATING_REQUIRED_FOR_COMMENT` | 403 | у пары user+film нет `Rating` — сначала нужно оценить фильм |
+
+Проверка стоит до валидации тела, поэтому без оценки ответ 403, а не 400 «текст длинный»;
+кривой `filmId` остаётся 400. Оценка с `weight: 0` тоже считается входом: гейтинг про
+«смотрел ли», а анти-накрутка — про агрегаты; спам в этом случае ловит модерация. Админ
+не исключение. Фронт определяет доступность формы по `userRating` в `GET /api/films/:id`,
+а 403 — честный fallback при рассинхроне. Оценку и комментарий нужно отправлять
+последовательно: сначала `POST /api/ratings`, потом `POST /api/comments`.
+
+### Гейтинг рецензий (B4)
+
+Рецензия — ступень выше комментария: vibe даёт право комментировать, полная оценка —
+право писать рецензию. Гейт стоит до валидации тела и до модерации, как в B3.
+
+| Код | HTTP | Когда |
+|---|---|---|
+| `FULL_RATING_REQUIRED_FOR_REVIEW` | 403 | у пары user+film нет оценки с `completeness: 'full'` |
+
+`ratingId` в теле больше не принимается: сервер берёт `_id` своей оценки, поэтому старый
+фронт, который его присылает, продолжает работать — значение игнорируется (DECISION B4/1A).
+`isSpoiler` — булево, `default: false`, отдаётся везде, где отдаётся рецензия. Фильтра
+`?spoiler` на бэке нет: список отдаётся целиком, скрытие — дело фронта (DECISION B4/4).
+В админ-очереди спойлер показывается полным текстом — модератор должен прочитать его
+целиком (DECISION B4/5). Минимум текста остаётся 350 символов.
+
+### Комментарии к рецензиям (B8)
+
+Два независимых слоя обсуждения: под фильмом и под рецензией. `Comment` полиморфен —
+`targetType: 'film' | 'review'` + `targetId`; `filmId` остаётся legacy-полем (у комментария
+к рецензии он заполняется из рецензии, поэтому «все комментарии фильма» возможны).
+
+| Правило | Как работает |
+|---|---|
+| Гейтинг B3 | только для `targetType: 'film'`; комментарий к рецензии оценки не требует |
+| Премодерация | `pending` → `approved`/`rejected` для обоих типов |
+| Черновик рецензии | комментировать нельзя: посторонним `404`, автору и админу `403 REVIEW_NOT_PUBLISHED`; `rejected` — так же |
+| `filmId` в теле | для `targetType: 'review'` игнорируется: источник истины — `review.filmId` |
+| Старый роут | `GET /api/comments/:filmId` — только комментарии к фильму, формат не менялся |
+| Ответы | тот же `targetType`/`targetId`, родитель `approved`, один уровень вложенности |
+| Лента | событие создаётся только для комментариев к фильму |
+| Счётчик под рецензией | не денормализуется: `countDocuments` по индексу |
+
+POST без `targetType` считается комментарием к фильму (`targetId` из `targetId` или
+`filmId`) — так задеплоенный фронт продолжает работать до деплоя F-серии.
+
+### Дневник просмотров (B5)
+
+«Просмотрено» ≠ «оценено». Дневник — история просмотров, а не состояние: записей на один
+фильм может быть много (пересмотры), поэтому это отдельная коллекция `watch`, а не поле
+в `Rating`. Дневник не гейтится ничем: это самое дешёвое действие в системе.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/watches` | access | `{ filmId, watchedAt?, isRewatch?, tags? }` → `201` |
+| GET | `/api/watches/me` | access | свой дневник: `page`, `limit` (<=100) |
+| GET | `/api/watches/user/:userId` | — | публичный дневник; закрытый → `403 DIARY_PRIVATE`, скрытый профиль → `404 PROFILE_HIDDEN` |
+| GET | `/api/users/:id/watches` | — | то же, что `/api/watches/user/:id` (алиас для профиля) |
+| GET | `/api/watches/:filmId/count` | — | `{ filmId, count }` — «N просмотров», скрытых не фильтрует |
+| PATCH | `/api/watches/settings` | access | `{ private: true\|false }` |
+| DELETE | `/api/watches/:id` | access | удалить свою запись; чужая → 404 |
+
+Правила:
+
+- `watchedAt` может быть в прошлом (задним числом), но не в будущем: «отметил, что посмотрю
+  завтра» — это watchlist, а не дневник. По умолчанию — сейчас.
+- `isRewatch` ставит пользователь, автоопределения нет (DECISION B5/4).
+- Теги не проходят премодерацию: 1–30 символов, до 10 уникальных, `trim`, дедуп без учёта
+  регистра (DECISION B5/1).
+- Дневник публичный по умолчанию, владелец может его закрыть (DECISION B5/3); закрытый
+  виден только владельцу и админу. `watchesCount` на фильме при этом продолжает считать
+  все записи — это агрегат без имён (DECISION B5/3b).
+- `counters.watches` меняется при создании и удалении. Событие в ленту не создаётся
+  (DECISION B5/5). Создание оценки запись дневника **не** создаёт (DECISION B5/8);
+  связать можно только явным `watchId` при создании оценки или рецензии (DECISION B5/2).
+- `GET /api/films/:id` отдаёт `watchesCount` — считает все записи, включая пользователей
+  с `weight: 0` (DECISION B5/6).
+
+### Watchlist — «хочу посмотреть» (B6)
+
+Третья ось рядом с дневником и оценкой. Состояние, а не история: **одна** запись на пару
+user+film (уникальный индекс), в отличие от дневника с пересмотрами. Самое дешёвое
+действие: не гейтится ни оценкой, ни модерацией, ни приватностью.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/watchlist` | access | `{ filmId }` → `201`; повторное добавление → `200`; ответ `{ inWatchlist: true }` |
+| DELETE | `/api/watchlist/:id` | access | своё; уже удалённое/несуществующее → `200 { inWatchlist: false }`; чужое → 404 |
+| GET | `/api/watchlist/check/:filmId` | access | `{ inWatchlist: bool }` для кнопки на странице фильма |
+| GET | `/api/watchlist/user` | access | свой список, `page`, `limit` (<=100) |
+| GET | `/api/users/:id/watchlist` | — | публичный список; скрытый профиль без прав → `404 PROFILE_HIDDEN` |
+
+Правила:
+
+- Двойной клик не наказывается: `POST` идемпотентен, гонка двух запросов разрешается
+  уникальным индексом (второй получает `200`, а не `409`).
+- Удаление идемпотентно: ответ всегда `{ inWatchlist: false }`, без `{ deleted }` и без
+  `404` на «уже удалено» (DECISION B6/1A).
+- Watchlist **не влияет на достижения** и **не создаёт событие** в ленте: это намерение,
+  а не действие (B6/2A, B6/event).
+- Создание записи в дневнике (`POST /api/watches`) **не удаляет** фильм из watchlist;
+  автоудаления нет — предложение убрать делает фронт (B6/3B).
+- Лимит: 200 добавлений в час **на аккаунт** (не на IP).
+- `counters.watchlist` меняется при добавлении и удалении; в заглушке скрытого профиля
+  счётчиков нет вообще.
+
+### Сердечко фильма (B7)
+
+Четвёртая ось: «мне нравится» — эмоция, а не суждение, независимая от оценки.
+Одна запись на пару user+film.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| POST | `/api/films/:id/like` | access | поставить (идемпотентно) → `{ liked: true, likesCount }` |
+| DELETE | `/api/films/:id/like` | access | снять (идемпотентно) → `{ liked: false, likesCount }` |
+| GET | `/api/users/:id/likes` | — | публичные «Понравившиеся»; скрытый профиль без прав → `404 PROFILE_HIDDEN` |
+| GET | `/api/users/me/likes` | access | свои «Понравившиеся», без гейтинга |
+
+`GET /api/films/:id` отдаёт `liked` (анониму — `false`) и `likesCount`.
+
+**Два разных числа, не путать:**
+
+| Поле | Что считает | Вес |
+|---|---|---|
+| `Film.likesCount` | сердечки у фильма (публичный агрегат) | только `weight > 0` |
+| `User.counters.filmLikes` | сколько лайков поставил человек | все, включая `weight: 0` |
+
+`POST` и `DELETE` — не toggle: повторный `POST` оставляет лайк, повторный `DELETE`
+убирает. Так два одновременных запроса дают одно состояние и один счётчик
+(DECISION B7/1A). Лимит — 200 запросов в час на IP. Событие в ленту не создаётся,
+достижения не меняются, `Film.likesCount` скрытого пользователя учитывается.
+
+### Приватность профиля и ленты (B-PRIVACY)
+
+Два независимых флага: `hideProfile` — скрыть страницу профиля, `hideFromFeed` — не
+показывать события автора в общей ленте. Скрываются только личные разделы: дневник,
+оценки, достижения. Рецензии и комментарии остаются видимыми там, где опубликованы,
+и оценки скрытого продолжают участвовать в средних фильмов.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/users/me/privacy` | access | `{ hideProfile, hideFromFeed }` |
+| PUT | `/api/users/me/privacy` | access | partial update, лог только при фактическом изменении |
+
+Правила:
+
+- Скрытый профиль видят владелец, админ и в будущем «друзья» (`canViewProfile`).
+  Посторонний получает заглушку `200 { user: { id, nickname, avatar, isHidden: true } }`;
+  у `GET /api/users/nickname/:nickname` — та же заглушка без обёртки `user`.
+- `GET /api/users/:id/achievements` и `GET /api/users/:id/watches` при скрытом профиле
+  отдают `404 PROFILE_HIDDEN`: достижения и дневник — личные разделы, а не «страница».
+  Вкладки `ratings`/`reviews`/`comments` ведут себя так же (B9).
+- `GET /api/events` исключает события авторов с `hideFromFeed`; фильтрация на чтении —
+  снял флаг, события вернулись.
+- `GET /api/top/users` исключает скрытые профили.
+- `POST /api/watches`, `DELETE /api/watches/:id`, `GET /api/watches/me` и
+  `GET /api/watches/:filmId/count` приватностью не гейтятся.
+- Лог изменений — коллекция `PrivacyChangeLog`, TTL 180 дней.
+
+### Вкладки профиля и закреплённое достижение (B9)
+
+Карточка профиля компактная. `GET /api/users/:id` отдаёт только
+`{ user: { …, counters, pinnedAchievement, achievementsCount } }`; массивов
+`ratings`, `reviews`, `comments`, `watches`, `achievements` в ответе больше нет.
+**DECISION B9/1B:** это осознанно ломающее изменение — вкладки переехали в отдельные
+эндпоинты, а двойной формат («массивы + вкладки») не поддерживается даже на релиз.
+
+| Метод | Путь | Доступ | Описание |
+|---|---|---|---|
+| GET | `/api/users/:id/ratings` | — (скрытый → 404) | `{ items, pagination }`; vibe + full, `completeness` в каждом; `film` популен; сортировка по дате |
+| GET | `/api/users/:id/reviews` | — (скрытый → 404) | `{ items, pagination }`; `status: approved` для чужих, всё для владельца/админа |
+| GET | `/api/users/:id/comments` | — (скрытый → 404) | `{ items, pagination }`; оба `targetType`, `targetType` в каждом; у review популена цель |
+| GET | `/api/users/me/pinned-achievement` | access | `{ pinnedAchievement }` — текущее значение |
+| PUT | `/api/users/me/pinned-achievement` | access | `{ achievement: string \| null }`; `null` снимает закрепление |
+
+Правила:
+
+- `:id = me` — свои вкладки (`DECISION B9/7A`). Отдельных `/me/ratings` и т.п. нет:
+  `me` разрешается тем же роутом по токену: без токена — `401 UNAUTHORIZED`.
+- Пагинация — общая `utils/paging.js`: `page` (с 1), `limit` (1..100, по умолчанию 20),
+  ответ `{ items, pagination: { page, limit, total, pages } }`.
+- Статус-фильтр: чужой зритель видит только `approved`; владелец и админ — всё,
+  включая `pending`/`rejected`.
+- Скрытый профиль: все три вкладки отдают `404 PROFILE_HIDDEN` (как дневник, watchlist
+  и «Понравившиеся»). Публичные эндпоинты контента (`GET /api/reviews/:filmId`,
+  `GET /api/comments?targetType=…`) при этом не меняются: скрыт профиль, а не текст.
+- `/ratings` отдаёт **все** оценки (vibe + full). `counters.ratings` считает только
+  полные, поэтому он намеренно не равен `pagination.total` этой вкладки; `counters.vibes`
+  с числом vibe-записей сходится. Это контракт, а не баг (`DECISION B9/2B+4A`).
+- В `/comments` у элемента есть `targetType`, `targetId` (id цели) и `target`:
+  для `review` — объект рецензии, для `film` — `null` (сам фильм уже в `film`).
+  Так `targetId` остаётся идентификатором независимо от типа цели.
+- `pinnedAchievement` — строка из `User.achievements` (например, «🎬 Первый шаг»),
+  не ObjectId и не ссылка; без индекса. `PUT` принимает только уже полученное
+  достижение, иначе `400 ACHIEVEMENT_NOT_EARNED`. Если запись потеряла достижение,
+  чтение отдаёт `null` и пишет `[WARN]`, не падая.
+- При скрытом профиле `pinnedAchievement` и `achievementsCount` не отдаются: в заглушке
+  только `id`, `nickname`, `avatar`, `isHidden`.
 
 ### Пользователи, топ, события, админ
 
 | Метод | Путь | Доступ |
 |---|---|---|
-| GET | `/api/users/:id` | — (email — только свой) |
+| GET | `/api/users/:id` | — (email — только свой) | карточка: `user` + `counters` + `pinnedAchievement` + `achievementsCount`, без массивов |
 | GET | `/api/users/nickname/:nickname` | — |
+| GET | `/api/users/:id/ratings` / `reviews` / `comments` | — (скрытый → 404) | вкладки профиля, `{ items, pagination }` |
+| GET/PUT | `/api/users/me/pinned-achievement` | access | закреплённое достижение |
 | GET | `/api/users/:id/achievements` | — |
 | GET | `/api/users/me/achievements` | access |
 | GET | `/api/top/users` | — (`{ items, pagination }`, без `flagged`) |
@@ -335,11 +608,25 @@ cookie с vercel.app на onrender.com), `path: '/api/auth'`.
 ## 10. Тесты
 
 ```bash
-npm test
+npm test              # весь набор; нужен MongoDB на 127.0.0.1:27017
+npm run test:vibe     # только B1, сам поднимает in-memory MongoDB
+npm run test:aggregates  # только B2, тоже со своей in-memory MongoDB
+npm run test:gating      # только B3, тоже со своей in-memory MongoDB
+npm run test:reviews     # только B4, тоже со своей in-memory MongoDB
+npm run test:watches     # только B5, тоже со своей in-memory MongoDB
+npm run test:privacy     # только B-PRIVACY, тоже со своей in-memory MongoDB
+npm run test:watchlist   # только B6, тоже со своей in-memory MongoDB
+npm run test:likes       # только B7, тоже со своей in-memory MongoDB
+npm run test:targets     # только B8, тоже со своей in-memory MongoDB
+npm run test:tabs        # только B9, тоже со своей in-memory MongoDB
 ```
 
-112 тестов на `node:test`, у каждого файла своя БД (`cinephilium-test-auth-invite` и т.д.),
-поэтому параллельный запуск безопасен. Нужен MongoDB на `127.0.0.1:27017`.
+298 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
+15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`,
+17 в `watchlist.test.js`, 19 в `film-likes.test.js`, 23 в `comment-targets.test.js`
+и 21 в `profile-tabs.test.js` — эти десять сами поднимают in-memory MongoDB.
+У каждого файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
 |---|---|
@@ -350,6 +637,47 @@ npm test
 | `tests/errorHandler.test.js` | 9 |
 | `tests/poster.test.js` | 17 |
 | `tests/regression.test.js` | 33 |
+| `tests/vibe-rating.test.js` | 14 |
+| `tests/film-aggregates.test.js` | 14 |
+| `tests/comment-gating.test.js` | 15 |
+| `tests/review-gating.test.js` | 15 |
+| `tests/watch-diary.test.js` | 23 |
+| `tests/privacy.test.js` | 25 |
+| `tests/watchlist.test.js` | 17 |
+| `tests/film-likes.test.js` | 19 |
+| `tests/comment-targets.test.js` | 23 |
+| `tests/profile-tabs.test.js` | 21 |
+
+`vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
+`film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
+vibe, только full, пустой фильм, `weight: 0`, участники топа по каждой оси, `total`
+по фильтру, округление, алиас `averageRating`, `sort=new`, пустой топ с подсказкой.
+`comment-gating.test.js`: `npm run test:gating` — гейт комментариев, ответы, свой тред,
+админ, `weight: 0`, лайки, legacy, приоритет 403 над 400, гонка.
+`watch-diary.test.js`: `npm run test:watches` — дневник, пересмотры, дата в прошлом и
+будущем, удаление своё/чужое, публичность и приватность, теги, отсутствие события,
+привязка оценки и рецензии, `watchesCount` с `weight: 0`, миграция.
+`review-gating.test.js`: `npm run test:reviews` — гейт рецензий, игнор `ratingId`,
+границы длины, `isSpoiler` во всех выдачах, полный текст в админ-очереди.
+`privacy.test.js`: `npm run test:privacy` — флаги и лог, TTL, заглушки скрытого профиля,
+права владельца/админа, 404 на достижения и дневник, публичный контент скрытого,
+агрегаты, лента, топ, `Event.userId` и обе миграции.
+`watchlist.test.js`: `npm run test:watchlist` — добавление/повтор/удаление и
+идемпотентность, чужое удаление, `check`, пагинация с `posterUrl`, приватность,
+независимость от достижений, событий и дневника, лимит 201-го запроса, миграция.
+`film-likes.test.js`: `npm run test:likes` — два разных счётчика, идемпотентные
+`POST`/`DELETE` (включая двойные одновременные), `liked` в карточке фильма,
+списки и приватность, `weight: 0`, пометка и снятие пометки фермы, лимит,
+сверка и миграция.
+`comment-targets.test.js`: `npm run test:targets` — гейтинг только для film,
+комментарии к рецензии без оценки, pending/rejected, игнор `filmId`, правила
+`parentId`, новый и старый роуты, изоляция слоёв, модерация, миграция.
+`profile-tabs.test.js`: `npm run test:tabs` — карточка без legacy-массивов,
+пагинация и `completeness` в `/ratings`, сортировка по дате, `counters.ratings`
+против `pagination.total`, status-фильтр в `/reviews` и `/comments`, оба
+`targetType`, `:id = me`, 404 скрытого профиля для всех вкладок,
+pinnedAchievement (установка/снятие/ACHIEVEMENT_NOT_EARNED/потерянное достижение),
+порядок роутов, нетронутые разделы, миграция.
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.
@@ -413,13 +741,173 @@ node scripts/reconcile-counters.js
 Если что-то пошло не так — восстановление из бэкапа:
 `mongorestore --uri="$MONGODB_URI" ./backup-2026-10-25`.
 
+### P1 — двухступенчатая оценка (vibe/full)
+
+Что делает миграция:
+
+- `Rating` без `completeness` → `completeness: 'full'` (все старые оценки — полные);
+- `User` без `counters.vibes` → `counters.vibes: 0`.
+
+Скрипт идемпотентен, значения существующих полей не перезаписывает. Запускать **до деплоя**
+нового кода, в Render Shell или на машине с доступом к базе.
+
+```bash
+# 0. Бэкап. Обязательно.
+mongodump --uri="$MONGODB_URI" --out=./backup-$(date +%F)
+# ожидаемо: ... done dumping cinephilium.ratings (N documents)
+
+# 1. Сухой прогон: только считает, ничего не пишет.
+node scripts/migrate-p1-vibe-ratings.js --dry-run
+# ожидаемо: [migrate-p1] dry-run: ratings без completeness=1287, users без counters.vibes=48
+
+# 2. Боевой прогон.
+node scripts/migrate-p1-vibe-ratings.js
+# ожидаемо: [migrate-p1] обновлено: ratings=1287, users=48
+
+# 3. Повторный сухой прогон — проверка идемпотентности.
+node scripts/migrate-p1-vibe-ratings.js --dry-run
+# ожидаемо: ratings без completeness=0, users без counters.vibes=0
+
+# 4. Прямая проверка в базе.
+mongosh "$MONGODB_URI" --quiet --eval 'db.ratings.countDocuments({ completeness: { $exists: false } })'
+# ожидаемо: 0
+mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes": { $exists: false } })'
+# ожидаемо: 0
+```
+
+Только после шага 4 — деплой. Числа в примере условные; важны нули на шагах 3–4.
+
+### B5 — дневник просмотров (Watch)
+
+Что делает миграция:
+
+- `User` без `counters.watches` → `0`;
+- затем `counters.watches` выставляется **по факту** — по количеству записей `Watch`
+  у пользователя (источник правды — коллекция, а не догадка);
+- `User` без `diaryPrivate` → `false` (дневник открыт по умолчанию).
+
+Коллекция `watch` новая, данных для переноса нет — создаются только индексы. Скрипт
+идемпотентен, поэтому безопасен и после появления первых записей.
+
+```bash
+# 1. Сухой прогон.
+node scripts/migrate-b5-watches.js --dry-run
+# ожидаемо: [migrate-b5] dry-run: users без counters.watches=N, users без diaryPrivate=N, ...
+
+# 2. Боевой прогон.
+node scripts/migrate-b5-watches.js
+# ожидаемо: [migrate-b5] обновлено: users=N, counters.watches=0
+
+# 3. Повторный сухой прогон — проверка идемпотентности.
+node scripts/migrate-b5-watches.js --dry-run
+# ожидаемо: users без counters.watches=0, users без diaryPrivate=0
+```
+
+Важно: `counters.watches` считает и `counterMaintenance.js`, иначе ближайший
+`migrate-counters.js` / `reconcile-counters.js` (он делает `$set: { counters }` целиком)
+затёр бы поле.
+
+### B-PRIVACY — приватность профиля и ленты
+
+Две миграции, обе идемпотентны и поддерживают `--dry-run`. Запускать **до деплоя**.
+
+```bash
+# 1. Флаги приватности всем пользователям.
+node scripts/add-privacy-fields.js --dry-run
+# ожидаемо: [add-privacy] dry-run: users без privacy=N, без hideProfile=N, без hideFromFeed=N
+node scripts/add-privacy-fields.js
+# ожидаемо: [add-privacy] обновлено users=N
+
+# 2. Автор события отдельным полем (Event.userId), матч по нику.
+node scripts/add-event-userid.js --dry-run
+# ожидаемо: [add-event-userid] dry-run: events без userId=N, сматчено=N, без пользователя=0
+node scripts/add-event-userid.js
+# ожидаемо: [add-event-userid] обновлено events=N
+```
+
+Правило по несматченным событиям: `0` — норма; ровно `1` — осиротевшее событие
+(удалённый пользователь) пропускается с логом; **больше `1` — стоп** с кодом 1 и без
+записи: это уже не одиночный случай, нужен разбор. Повторный прогон должен печатать
+`events без userId=0`.
+
+Почему это важно: без `Event.userId` старые события нельзя скрыть по `hideFromFeed`,
+а без `privacy` у пользователя поле читается как «всё открыто» — миграция делает
+состояние явным.
+
+### B6 — watchlist
+
+```bash
+node scripts/add-watchlist-counters.js --dry-run
+# ожидаемо: [add-watchlist] dry-run: users без counters.watchlist=N, пользователей с записями=0, всего users=N
+node scripts/add-watchlist-counters.js
+# ожидаемо: [add-watchlist] обновлено users=N, пропущено (значение уже верное)=M
+```
+
+Коллекция `watchlistitems` новая — переносить нечего, создаются только индексы.
+Счётчик выставляется по факту из коллекции, поэтому повторный прогон печатает
+`обновлено users=0`. Важно: `counters.watchlist` считает и `counterMaintenance.js`
+(он делает `$set: { counters }` целиком) — без этого reconcile обнулил бы поле.
+
+### B7 — сердечки
+
+```bash
+# 1. Поля: Film.likesCount и User.counters.filmLikes.
+node scripts/add-film-likes-fields.js --dry-run
+# ожидаемо: [add-film-likes] dry-run: films без likesCount=N, users без counters.filmLikes=N
+node scripts/add-film-likes-fields.js
+# ожидаемо: [add-film-likes] обновлено: films=N, users=N
+
+# 2. Сверка публичного счётчика с фактическими лайками (weight > 0).
+node scripts/reconcile-film-likes.js --dry-run
+# ожидаемо: [reconcile-film-likes] dry-run: films=N, расхождений=0
+node scripts/reconcile-film-likes.js
+# ожидаемо: [reconcile-film-likes] apply: films=N, расхождений=0, исправлено=0
+```
+
+Коллекция `filmlikes` новая — переносить нечего. После первого прогона
+`reconcile-film-likes` должен показывать `расхождений=0`; если нет — значит
+`flag-sybil-accounts.js` когда-то пометил ферму на старом коде, и счётчик надо
+долечить этим же скриптом (он идемпотентен). `counters.filmLikes` считает и
+`counterMaintenance.js` — иначе `$set: { counters }` обнулил бы его.
+
+### B8 — полиморфные комментарии
+
+```bash
+node scripts/migrate-comment-target.js --dry-run
+# ожидаемо: [migrate-comment-target] dry-run: comments без targetType=N, film-комментариев без targetId=0
+node scripts/migrate-comment-target.js
+# ожидаемо: [migrate-comment-target] обновлено: targetType+targetId=N, targetId=0
+```
+
+Без миграции старые комментарии не имеют `targetType`/`targetId`. Чтение их терпит
+(отсутствующий тип считается `film`), но новые выборки по `targetId` и второй индекс
+рассчитаны на заполненные поля — поэтому миграция обязательна. Скрипт идемпотентен,
+повторный прогон печатает нули.
+
+### B9 — закреплённое достижение
+
+```bash
+node scripts/add-pinned-achievement.js --dry-run
+# ожидаемо: [add-pinned-achievement] dry-run: users без pinnedAchievement=N, всего users=M
+node scripts/add-pinned-achievement.js
+# ожидаемо: [add-pinned-achievement] обновлено users=N, пропущено (поле уже есть)=M-N
+node scripts/add-pinned-achievement.js --dry-run
+# ожидаемо: users без pinnedAchievement=0
+```
+
+Скрипт только проставляет `pinnedAchievement: null` тем пользователям, у кого поля
+ещё нет. Уже закреплённые достижения и явные `null` не трогает, поэтому повторный
+прогон безопасен и даёт нули. Миграция нужна до деплоя B9: Mongoose прочитает
+отсутствующее поле как `null` и без неё, но миграция выравнивает документы.
+
 ---
 
 ## 12. Деплой
 
 **Бэкенд (Render или любой Node-хостинг):**
 
-1. Build: `npm ci`; Start: `npm start`.
+1. Build: `npm ci --omit=dev`; Start: `npm start`. `mongodb-memory-server` —
+   devDependency только для тестов, на проде его ставить не нужно.
 2. Env: все обязательные + `NODE_ENV=production`, `COOKIE_SECURE=true`,
    `CORS_ORIGIN=https://<фронт>`, `CLIENT_URL=https://<фронт>`, `COOKIE_DOMAIN` не задавать.
    `IMAGE_PROXY_BASE_URL` можно не задавать вовсе — тогда постеры ссылаются на origin
@@ -463,6 +951,15 @@ node scripts/set-telegram.js <никнейм> @tg  # телеграм для с�
 node scripts/migrate-counters.js          # первичный расчёт counters
 node scripts/reconcile-counters.js        # сверка counters с документами
 node scripts/migrate-posters.js           # poster -> posterPath
+node scripts/migrate-p1-vibe-ratings.js   # P1: completeness + counters.vibes
+node scripts/migrate-b5-watches.js        # B5: counters.watches + diaryPrivate
+node scripts/add-privacy-fields.js        # B-PRIVACY: privacy у всех
+node scripts/add-event-userid.js          # B-PRIVACY: Event.userId по нику
+node scripts/add-watchlist-counters.js    # B6: counters.watchlist по факту
+node scripts/add-film-likes-fields.js     # B7: Film.likesCount + counters.filmLikes
+node scripts/reconcile-film-likes.js      # B7: сверка публичного счётчика лайков
+node scripts/migrate-comment-target.js    # B8: targetType/targetId у комментариев
+node scripts/add-pinned-achievement.js    # B9: pinnedAchievement=null у всех
 node scripts/backfill-anti-farm.js        # поля анти-накрутки + индексы
 node scripts/flag-sybil-accounts.js --dry-run   # найти фермы
 node scripts/flag-sybil-accounts.js             # пометить (weight=0)
@@ -479,6 +976,9 @@ node scripts/demo-registration.js               # демо-прогон реги
 - Нет удаления оценок/рецензий → награды не откатываются.
 - `updateAchievements` молча логирует ошибку, если соединение с Mongo не готово.
 - Достижения пересчитываются только при действиях, а не по расписанию.
+- Во вкладке оценок профиля и в ленте vibe-оценки показываются как `0`: бэкенд уже
+  отдаёт `completeness` рядом с баллами, но старый фронт его не учитывает — это задача
+  F1, не B2 (DECISION B2/5B). `0` на `null` там не меняем: это отменило бы DECISION 2A.
 - Нет OpenAPI-схемы; контракт описан здесь и в тестах.
 
 ---
@@ -492,5 +992,5 @@ src/                приложение (см. §4)
 tests/              node:test
 .env.example        шаблон окружения
 .githooks/          pre-commit: не пускает секреты в git
-CHANGELOG.md        что изменилось в 4.x и почему
+CHANGELOG.md        что изменилось в 5.x и почему
 ```

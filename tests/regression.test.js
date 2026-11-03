@@ -399,12 +399,12 @@ test('публичный профиль не показывает чужие ч�
     title: 'Черновик', text: 'x'.repeat(500), status: 'pending'
   });
 
-  const anonymous = await call(`/api/users/${author._id}`);
+  const anonymous = await call(`/api/users/${author._id}/reviews`);
   assert.equal(anonymous.status, 200);
-  assert.equal(anonymous.json.reviews.length, 0, 'аноним видит черновики');
+  assert.equal(anonymous.json.items.length, 0, 'аноним видит черновики');
 
-  const owner = await call(`/api/users/${author._id}`, { token: signAccessToken(author._id) });
-  assert.equal(owner.json.reviews.length, 1);
+  const owner = await call(`/api/users/${author._id}/reviews`, { token: signAccessToken(author._id) });
+  assert.equal(owner.json.items.length, 1);
 });
 
 test('ответ на комментарий другого фильма отклоняется', async () => {
@@ -415,6 +415,10 @@ test('ответ на комментарий другого фильма отк�
     userId: user._id, filmId: filmA._id, text: 'родитель', status: 'approved'
   });
   const token = signAccessToken(user._id);
+
+  // B3: писать можно только по оценённому фильму, поэтому оценки есть у обоих.
+  await createRating(user._id, filmA._id);
+  await createRating(user._id, filmB._id);
 
   const foreign = await call('/api/comments', {
     method: 'POST', token,
@@ -457,12 +461,14 @@ test('рецензия короче 350 символов отклоняется,
   assert.equal(exact.json.status, 'pending');
 });
 
-test('рецензия не принимает оценку другого фильма', async () => {
+test('рецензия требует полную оценку именно этого фильма', async () => {
   const author = await createUser();
   const filmA = await Film.create({ tmdbId: 22, title: 'A' });
   const filmB = await Film.create({ tmdbId: 23, title: 'B' });
   const ratingA = await createRating(author._id, filmA._id);
 
+  // B4: ratingId из тела игнорируется, сервер ищет свою full-оценку этого фильма.
+  // Оценка есть только у фильма A, значит рецензия на B недоступна.
   const response = await call('/api/reviews', {
     method: 'POST', token: signAccessToken(author._id),
     body: {
@@ -470,9 +476,9 @@ test('рецензия не принимает оценку другого фи�
       title: 'Чужой фильм', text: 'x'.repeat(400)
     }
   });
-  assert.equal(response.status, 400);
-  assert.equal(response.json.error.code, 'VALIDATION_ERROR');
-  assert.equal(await Review.countDocuments({ filmId: filmB._id }), 0, 'рецензия с чужой оценкой сохранилась');
+  assert.equal(response.status, 403);
+  assert.equal(response.json.error.code, 'FULL_RATING_REQUIRED_FOR_REVIEW');
+  assert.equal(await Review.countDocuments({ filmId: filmB._id }), 0, 'рецензия без своей оценки сохранилась');
 });
 
 test('автор видит свой черновик рецензии в списке фильма, чужой — нет', async () => {
@@ -508,6 +514,9 @@ test('автор видит свой черновик комментария в 
   const stranger = await createUser();
   const film = await Film.create({ tmdbId: 25, title: 'Комментарий' });
   const token = signAccessToken(author._id);
+
+  // B3: без оценки фильма комментарий не создаётся (403).
+  await createRating(author._id, film._id);
 
   const created = await call('/api/comments', {
     method: 'POST', token,
@@ -741,12 +750,12 @@ test('сквозной сценарий фронтенда: регистраци
   assert.equal(myReviews.status, 200);
   assert.equal(myReviews.json.length, 1);
 
-  const publicProfile = await call(`/api/users/${me.json._id}`);
+  const publicProfile = await call(`/api/users/${me.json._id}/reviews`);
   assert.equal(publicProfile.status, 200);
-  assert.equal(publicProfile.json.reviews.length, 0, 'чужой видит черновик');
+  assert.equal(publicProfile.json.items.length, 0, 'чужой видит черновик');
 
-  const ownProfile = await call(`/api/users/${me.json._id}`, { token });
-  assert.equal(ownProfile.json.reviews.length, 1);
+  const ownProfile = await call(`/api/users/${me.json._id}/reviews`, { token });
+  assert.equal(ownProfile.json.items.length, 1);
 
   const byNickname = await call('/api/users/nickname/' + encodeURIComponent('Путешественник'));
   assert.equal(byNickname.status, 200);

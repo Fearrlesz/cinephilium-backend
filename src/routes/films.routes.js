@@ -3,11 +3,21 @@ const mongoose = require('mongoose');
 const { body } = require('express-validator');
 const Film    = require('../models/Film');
 const Rating  = require('../models/Rating');
+const Watch   = require('../models/Watch');
+const FilmLike = require('../models/FilmLike');
 const { authenticate }   = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
-const { writeLimiter, extractBearer } = require('../middleware/security');
+const { writeLimiter, likeLimiter, extractBearer } = require('../middleware/security');
 const { verifyAccessToken } = require('../utils/jwt');
-const { roundTenth } = require('../config/scoring');
+const { incCounter } = require('../utils/counters');
+const {
+  SORT_AXES,
+  sortFieldFor,
+  FILM_STATS_STAGES,
+  participantMatch,
+  shapeFilmAggregates,
+  shapeFilmDetail
+} = require('../utils/filmAggregates');
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
@@ -29,55 +39,52 @@ function escapeRegex(value) {
 // ─────────────────────────────────────────────
 
 // GET /api/films/top
+// DECISION: B2/6A — в топе участвуют только фильмы, у которых есть число по
+// выбранной оси. Фильм без единой полной оценки не занимает место с нулём на
+// дне: у него нет значения, по которому его ранжировать. total считает ровно
+// участников, а не все фильмы базы.
 router.get('/top', asyncHandler(async (req, res, next) => {
-  try {
-    const sort  = req.query.sort || 'technical';
-    const limit = Math.min(parseInt(req.query.limit) || 5, 20);
-    const sortField =
-      sort === 'combined' ? 'averageCombined' :
-      sort === 'vibe'     ? 'averageVibe'     :
-                            'averageRating';
+  const sort  = req.query.sort || 'technical';
+  const limit = Math.min(parseInt(req.query.limit) || 5, 20);
+  const sortField = sortFieldFor(sort);
 
-    const films = await Film.aggregate([
-      {
-        $lookup: {
-          from: 'ratings',
-          let: { filmId: '$_id' },
-          pipeline: [
-            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
-            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
-            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
-          ],
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating:   { $avg: '$ratings.technicalScore' },
-          averageVibe:     { $avg: '$ratings.vibe' },
-          averageCombined: { $avg: '$ratings.combinedScore' },
-          votesCount:      { $size: '$ratings' },
-          _sortKey: {
-            $ifNull: [{
-              $avg: `$ratings.${
-                sortField === 'averageCombined' ? 'combinedScore' :
-                sortField === 'averageVibe'     ? 'vibe' :
-                                                  'technicalScore'
-              }`
-            }, -1]
-          }
-        }
-      },
-      { $match: { _sortKey: { $gt: 0 } } },
-      { $project: { ratings: 0, _sortKey: 0 } },
-      { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
-      { $limit: limit }
-    ]);
+  const [result = {}] = await Film.aggregate([
+    ...FILM_STATS_STAGES,
+    {
+      $facet: {
+        films: [
+          participantMatch(sortField),
+          { $sort: { [sortField]: -1, votesCount: -1, _id: 1 } },
+          { $limit: limit }
+        ],
+        axisTotal: [participantMatch(sortField), { $count: 'total' }],
+        // Нужен только для подсказки fallback, но считается всегда: одна
+        // лишняя ветка дешевле второго round-trip.
+        vibeTotal: [participantMatch(SORT_AXES.vibe), { $count: 'total' }]
+      }
+    }
+  ]);
 
-    res.json({ films: films.map(film => withPosterUrl(film, req)), sort: sortField, limit });
-  } catch (error) {
-    throw error;
-  }
+  const films     = result.films || [];
+  const total     = result.axisTotal?.[0]?.total || 0;
+  const vibeTotal = result.vibeTotal?.[0]?.total || 0;
+
+  // DECISION: B2/3C — пустой топ отдаётся пустым. Молчаливой подмены на
+  // vibe-топ нет: иначе пользователь читал бы числа вайба как топ по
+  // техническому. Вместо подмены — честный признак, что vibe-топ есть и его
+  // можно предложить по явному клику.
+  const fallback = {
+    sort: 'vibe',
+    available: total === 0 && sortField !== SORT_AXES.vibe && vibeTotal > 0
+  };
+
+  res.json({
+    films: films.map(film => withPosterUrl(shapeFilmAggregates(film), req)),
+    sort: sortField,
+    limit,
+    total,
+    fallback
+  });
 }));
 
 // GET /api/films/search-by-title
@@ -97,52 +104,164 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
   }
 }));
 
+// GET /api/films/facets
+// ДОЛЖЕН быть до /:id — иначе :id перехватит "facets".
+router.get('/facets', asyncHandler(async (req, res) => {
+  const [genreRows, yearRows] = await Promise.all([
+    Film.aggregate([
+      { $unwind: '$genres' },
+      { $group: { _id: '$genres', count: { $sum: 1 } } },
+      { $sort: { count: -1, _id: 1 } }
+    ]),
+    Film.aggregate([
+      { $match: { year: { $type: 'number' } } },
+      { $group: { _id: null, min: { $min: '$year' }, max: { $max: '$year' } } }
+    ])
+  ]);
+
+  res.json({
+    genres: genreRows
+      .filter(row => row._id)
+      .map(row => ({ value: row._id, count: row.count })),
+    years: {
+      min: yearRows[0]?.min ?? null,
+      max: yearRows[0]?.max ?? null
+    }
+  });
+}));
+
 // GET /api/films/:id
+// DECISION: B2/6.1 — на странице фильма отсутствующее среднее отдаётся нулём
+// (язык B1: 0 = «не вычислено», DECISION 2A), а не null и не отсутствием поля:
+// фронт показывает на нём «Нет оценок». В списках и топах то же отсутствие
+// отдаётся null, потому что там старый фронт рисует null как «—», а 0 нарисовал
+// бы красное «0.0». Разница намеренная.
 router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) => {
   if (checkValidation(req, next)) return;
 
+  const [film] = await Film.aggregate([
+    { $match: { _id: new mongoose.Types.ObjectId(String(req.params.id)) } },
+    ...FILM_STATS_STAGES
+  ]);
+  if (!film) throw new NotFoundError('Фильм не найден');
+
+  let userRating = null;
+  let liked = false;
+  const token = extractBearer(req);
+  if (token) {
+    try {
+      const decoded = verifyAccessToken(token);
+      userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
+      // B7: сердечко — отдельная ось, поэтому отдельный запрос, а не из агрегатов.
+      liked = Boolean(await FilmLike.exists({ filmId: film._id, userId: decoded.userId }));
+    } catch { /* игнор */ }
+  }
+
+  // DECISION: B5/6 — «N просмотров» публично и считает ВСЕ записи дневника,
+  // включая записи пользователей с weight: 0: дневник не гейтится и не взвешивается,
+  // анти-накрутка живёт в агрегатах оценок, а сортировки по просмотрам нет.
+  // Считаем отдельным запросом по индексу filmId, чтобы не трогать агрегаты B2.
+  const watchesCount = await Watch.countDocuments({ filmId: film._id });
+
+  res.json({
+    ...withPosterUrl(shapeFilmDetail(film), req),
+    watchesCount,
+    // DECISION: B7/2A — likesCount публичный агрегат и считает только лайки
+    // с weight > 0. Это НЕ counters.filmLikes (тот считает действия человека).
+    // `|| 0` — потому что агрегат возвращает сырой документ, без Mongoose-дефолтов.
+    likesCount: film.likesCount || 0,
+    liked,
+    userRating: userRating
+      ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
+      : null
+  });
+}));
+
+// POST /api/films/:id/like — поставить сердечко (идемпотентно).
+// DELETE /api/films/:id/like — снять сердечко (идемпотентно).
+//
+// DECISION: B7/1A — «двойной клик не наказывается» реализован разделением
+// намерения, а не toggle: повторный POST — это «оставь лайк», повторный DELETE —
+// «убери». Только так оба одновременных запроса ДЕТЕРМИНИРОВАННО дают одно
+// состояние и один счётчик — без таймеров и скрытого поведения. Клиент выбирает
+// действие по `liked` из GET /api/films/:id (он его и так получает).
+//
+// DECISION: B7/not-gated — не гейтится ни оценкой (B3/B4), ни приватностью:
+// сердечко — самое лёгкое действие, а свой список доступен владельцу всегда.
+//
+// DECISION: B7/event — событие в ленту не создаётся: «X лайкнул фильм Y» — шум.
+// DECISION: B7/4A — достижения не затрагиваются: counters.filmLikes не входит
+// в effective, новых ачивок за лайки нет, updateAchievements не вызывается.
+//
+// DECISION: B7/weight — weight лайка — снимок User.trustWeight на момент лайка
+// (тот же паттерн, что Rating.weight). В публичный Film.likesCount идут только
+// weight > 0 (2A); в counters.filmLikes — все лайки, включая weight: 0.
+
+async function currentLikesCount(filmId) {
+  const fresh = await Film.findById(filmId).select('likesCount');
+  return fresh?.likesCount || 0;
+}
+
+router.post('/:id/like', likeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const film = await Film.findById(req.params.id).select('likesCount');
+  if (!film) throw new NotFoundError('Фильм не найден');
+
+  const filmId = film._id;
+  const existing = await FilmLike.findOne({ userId: req.userId, filmId });
+
+  // Уже лайкнут — состояние то же, счётчики не трогаем (идемпотентность).
+  if (existing) {
+    return res.json({ liked: true, likesCount: film.likesCount || 0 });
+  }
+
+  const trustWeight = typeof req.user?.trustWeight === 'number' ? req.user.trustWeight : 1;
+
   try {
-    const film = await Film.findById(req.params.id);
-    if (!film) throw new NotFoundError('Фильм не найден');
-
-    const ratingData = await Rating.aggregate([
-      { $match: { filmId: film._id, weight: { $ne: 0 } } },
-      {
-        $group: {
-          _id: null,
-          avgTechnical: { $avg: '$technicalScore' },
-          avgVibe:      { $avg: '$vibe' },
-          avgCombined:  { $avg: '$combinedScore' },
-          total:        { $sum: 1 }
-        }
-      }
-    ]);
-
-    const avgTechnical = ratingData[0]?.avgTechnical || 0;
-    const avgVibe      = ratingData[0]?.avgVibe      || 0;
-    const avgCombined  = ratingData[0]?.avgCombined  || 0;
-    const votesCount   = ratingData[0]?.total        || 0;
-
-    let userRating = null;
-    const token = extractBearer(req);
-    if (token) {
-      try {
-        const decoded = verifyAccessToken(token);
-        userRating = await Rating.findOne({ filmId: film._id, userId: decoded.userId });
-      } catch { /* игнор */ }
-    }
-
-    res.json({
-      ...withPosterUrl(film, req),
-      averageRating:   roundTenth(avgTechnical),
-      averageVibe:     roundTenth(avgVibe),
-      averageCombined: roundTenth(avgCombined),
-      votesCount,
-      userRating
-    });
+    await FilmLike.create({ userId: req.userId, filmId, weight: trustWeight });
   } catch (error) {
+    // Параллельный POST успел создать лайк: состояние «лайкнуто», не удваиваем.
+    if (error?.code === 11000) {
+      return res.json({ liked: true, likesCount: await currentLikesCount(filmId) });
+    }
     throw error;
   }
+
+  if (trustWeight > 0) {
+    await Film.updateOne({ _id: filmId }, { $inc: { likesCount: 1 } });
+  }
+  await incCounter(req.userId, 'filmLikes', 1);
+
+  res.json({ liked: true, likesCount: await currentLikesCount(filmId) });
+}));
+
+router.delete('/:id/like', likeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const film = await Film.findById(req.params.id).select('likesCount');
+  if (!film) throw new NotFoundError('Фильм не найден');
+
+  const filmId = film._id;
+  const existing = await FilmLike.findOne({ userId: req.userId, filmId });
+
+  // Лайка нет — состояние уже «не лайкнут», счётчики не трогаем (идемпотентность).
+  if (!existing) {
+    return res.json({ liked: false, likesCount: film.likesCount || 0 });
+  }
+
+  const removed = await FilmLike.deleteOne({ _id: existing._id });
+
+  // Двойной DELETE: второй запрос удалил 0 документов — счётчики не двигаем.
+  if (removed.deletedCount === 1) {
+    if (existing.weight > 0) {
+      // $gt: 0 — счётчик не должен уходить в минус, даже если данные разъехались.
+      await Film.updateOne({ _id: filmId, likesCount: { $gt: 0 } }, { $inc: { likesCount: -1 } });
+    }
+    await incCounter(req.userId, 'filmLikes', -1);
+  }
+
+  res.json({ liked: false, likesCount: await currentLikesCount(filmId) });
 }));
 
 // GET /api/films/:id/ratings
@@ -153,7 +272,7 @@ router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res,
   try {
     const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname avatar isAdmin')
-      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores')
+      .select('technicalScore combinedScore vibe textReview likes createdAt genrePreset blockWeights scores completeness')
       .sort({ createdAt: -1 });
 
     const formattedRatings = ratings.map(r => ({
@@ -163,6 +282,7 @@ router.get('/:id/ratings', validateObjectId('id'), asyncHandler(async (req, res,
         combinedScore:  r.combinedScore,
         finalScore:     r.combinedScore,
         vibe:           r.vibe,
+        completeness:   r.completeness || 'full',
         textReview:     r.textReview,
         likes:          r.likes,
         createdAt:      r.createdAt,
@@ -192,7 +312,7 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
   try {
     const ratings = await Rating.find({ filmId: req.params.id, weight: { $ne: 0 } })
       .populate('userId', 'nickname isAdmin')
-      .select('combinedScore technicalScore')
+      .select('combinedScore technicalScore completeness')
       .lean();
 
     const result = ratings.map(r => ({
@@ -205,7 +325,8 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
         _id:            r._id,
         finalScore:     r.combinedScore ?? r.technicalScore ?? 0,
         technicalScore: r.technicalScore,
-        combinedScore:  r.combinedScore
+        combinedScore:  r.combinedScore,
+        completeness:   r.completeness || 'full'
       }
     }));
 
@@ -216,58 +337,70 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
 }));
 
 // GET /api/films
+// DECISION: B2/6A — каталог показывает ВСЕ фильмы, включая неоценённые: иначе
+// только что импортированный фильм исчезает из выдачи. Неоценённые идут в конце
+// с averageTechnical = null и votesCount = 0, а total считает все фильмы — это
+// и есть фильтр каталога, поэтому total честен относительно него.
+// DECISION: B2/2B — sort=new даёт точку входа для свежих импортов. Это
+// nice-to-have, а не затычка: 6A делает такие фильмы видимыми и без него,
+// поэтому убрать sort=new можно без дыры в контракте.
+// F8/catalog: q/genre/yearFrom/yearTo/rated фильтруют реальную выдачу,
+// total считается после фильтров, а не по всей коллекции.
 router.get('/', asyncHandler(async (req, res, next) => {
-  try {
-    const sort  = req.query.sort || 'technical';
-    const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-    const skip  = (page - 1) * limit;
+  const sort  = req.query.sort || 'technical';
+  const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
 
-    let sortField;
-    switch (sort) {
-      case 'combined': sortField = 'averageCombined'; break;
-      case 'vibe':     sortField = 'averageVibe';     break;
-      case 'technical':
-      default:         sortField = 'averageRating';   break;
-    }
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  const genre = String(req.query.genre || '').trim().slice(0, 80);
+  const yearFrom = parseInt(req.query.yearFrom, 10);
+  const yearTo = parseInt(req.query.yearTo, 10);
+  const ratedParam = String(req.query.rated || '').toLowerCase();
+  const rated = ['1', 'with', 'rated'].includes(ratedParam)
+    ? 'rated'
+    : ['0', 'without', 'unrated'].includes(ratedParam) ? 'unrated' : null;
 
-    const films = await Film.aggregate([
-      {
-        $lookup: {
-          from: 'ratings',
-          let: { filmId: '$_id' },
-          pipeline: [
-            // Оценки помеченных ферм (weight: 0) не участвуют в средних.
-            { $match: { $expr: { $eq: ['$filmId', '$$filmId'] }, weight: { $ne: 0 } } },
-            { $project: { technicalScore: 1, vibe: 1, combinedScore: 1, weight: 1 } }
-          ],
-          as: 'ratings'
-        }
-      },
-      {
-        $addFields: {
-          averageRating:   { $avg: '$ratings.technicalScore' },
-          averageVibe:     { $avg: '$ratings.vibe' },
-          averageCombined: { $avg: '$ratings.combinedScore' },
-          votesCount:      { $size: '$ratings' }
-        }
-      },
-      { $project: { ratings: 0 } },
-      { $sort: { [sortField]: -1, _id: 1 } },
-      { $skip: skip },
-      { $limit: limit }
-    ]);
-
-    const total = await Film.countDocuments();
-
-    res.json({
-      films: films.map(film => withPosterUrl(film, req)),
-      pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-      sort: sortField
-    });
-  } catch (error) {
-    throw error;
+  const match = {};
+  if (q) match.title = { $regex: escapeRegex(q), $options: 'i' };
+  if (genre) match.genres = genre;
+  if (Number.isFinite(yearFrom) || Number.isFinite(yearTo)) {
+    match.year = {};
+    if (Number.isFinite(yearFrom)) match.year.$gte = yearFrom;
+    if (Number.isFinite(yearTo)) match.year.$lte = yearTo;
   }
+
+  const isNew = sort === 'new';
+  const isTitle = sort === 'title';
+  const sortField = sortFieldFor(sort);
+
+  const pipeline = [{ $match: match }, ...FILM_STATS_STAGES];
+  if (rated === 'rated') pipeline.push({ $match: { votesCount: { $gt: 0 } } });
+  if (rated === 'unrated') pipeline.push({ $match: { votesCount: 0 } });
+
+  pipeline.push({
+    $facet: {
+      films: [
+        isNew
+          ? { $sort: { createdAt: -1, _id: -1 } }
+          : isTitle
+            ? { $sort: { title: 1, _id: 1 } }
+            : { $sort: { [sortField]: -1, _id: 1 } },
+        { $skip: (page - 1) * limit },
+        { $limit: limit }
+      ],
+      total: [{ $count: 'total' }]
+    }
+  });
+
+  const [result = {}] = await Film.aggregate(pipeline);
+  const films = result.films || [];
+  const total = result.total?.[0]?.total || 0;
+
+  res.json({
+    films: films.map(film => withPosterUrl(shapeFilmAggregates(film), req)),
+    pagination: { page, limit, total, pages: Math.ceil(total / limit) },
+    sort: isNew ? 'createdAt' : isTitle ? 'title' : sortField
+  });
 }));
 
 // POST /api/films/import
@@ -336,7 +469,12 @@ router.post('/import', writeLimiter, authenticate, [
 
     const points = req.isAdmin ? 5 : 2;
     await addPoints(req.userId, req.userId, 'import', points, film._id);
-    await createEvent('film_add', req.user.nickname, film.title, film._id);
+    await createEvent('film_add', {
+      userId: req.userId,
+      nickname: req.user.nickname,
+      film: film.title,
+      filmId: film._id
+    });
     await updateAchievements(req.userId);
 
     res.status(201).json({
