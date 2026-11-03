@@ -104,6 +104,32 @@ router.get('/search-by-title', asyncHandler(async (req, res, next) => {
   }
 }));
 
+// GET /api/films/facets
+// ДОЛЖЕН быть до /:id — иначе :id перехватит "facets".
+router.get('/facets', asyncHandler(async (req, res) => {
+  const [genreRows, yearRows] = await Promise.all([
+    Film.aggregate([
+      { $unwind: '$genres' },
+      { $group: { _id: '$genres', count: { $sum: 1 } } },
+      { $sort: { count: -1, _id: 1 } }
+    ]),
+    Film.aggregate([
+      { $match: { year: { $type: 'number' } } },
+      { $group: { _id: null, min: { $min: '$year' }, max: { $max: '$year' } } }
+    ])
+  ]);
+
+  res.json({
+    genres: genreRows
+      .filter(row => row._id)
+      .map(row => ({ value: row._id, count: row.count })),
+    years: {
+      min: yearRows[0]?.min ?? null,
+      max: yearRows[0]?.max ?? null
+    }
+  });
+}));
+
 // GET /api/films/:id
 // DECISION: B2/6.1 — на странице фильма отсутствующее среднее отдаётся нулём
 // (язык B1: 0 = «не вычислено», DECISION 2A), а не null и не отсутствием поля:
@@ -318,32 +344,62 @@ router.get('/:id/users', validateObjectId('id'), asyncHandler(async (req, res, n
 // DECISION: B2/2B — sort=new даёт точку входа для свежих импортов. Это
 // nice-to-have, а не затычка: 6A делает такие фильмы видимыми и без него,
 // поэтому убрать sort=new можно без дыры в контракте.
+// F8/catalog: q/genre/yearFrom/yearTo/rated фильтруют реальную выдачу,
+// total считается после фильтров, а не по всей коллекции.
 router.get('/', asyncHandler(async (req, res, next) => {
   const sort  = req.query.sort || 'technical';
   const page  = Math.max(1, parseInt(req.query.page, 10) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 20));
-  const skip  = (page - 1) * limit;
 
-  const isNew     = sort === 'new';
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  const genre = String(req.query.genre || '').trim().slice(0, 80);
+  const yearFrom = parseInt(req.query.yearFrom, 10);
+  const yearTo = parseInt(req.query.yearTo, 10);
+  const ratedParam = String(req.query.rated || '').toLowerCase();
+  const rated = ['1', 'with', 'rated'].includes(ratedParam)
+    ? 'rated'
+    : ['0', 'without', 'unrated'].includes(ratedParam) ? 'unrated' : null;
+
+  const match = {};
+  if (q) match.title = { $regex: escapeRegex(q), $options: 'i' };
+  if (genre) match.genres = genre;
+  if (Number.isFinite(yearFrom) || Number.isFinite(yearTo)) {
+    match.year = {};
+    if (Number.isFinite(yearFrom)) match.year.$gte = yearFrom;
+    if (Number.isFinite(yearTo)) match.year.$lte = yearTo;
+  }
+
+  const isNew = sort === 'new';
+  const isTitle = sort === 'title';
   const sortField = sortFieldFor(sort);
 
-  const pipeline = [...FILM_STATS_STAGES];
-  pipeline.push(
-    isNew
-      ? { $sort: { createdAt: -1, _id: -1 } }
-      : { $sort: { [sortField]: -1, _id: 1 } }
-  );
-  pipeline.push({ $skip: skip }, { $limit: limit });
+  const pipeline = [{ $match: match }, ...FILM_STATS_STAGES];
+  if (rated === 'rated') pipeline.push({ $match: { votesCount: { $gt: 0 } } });
+  if (rated === 'unrated') pipeline.push({ $match: { votesCount: 0 } });
 
-  const [films, total] = await Promise.all([
-    Film.aggregate(pipeline),
-    Film.countDocuments()
-  ]);
+  pipeline.push({
+    $facet: {
+      films: [
+        isNew
+          ? { $sort: { createdAt: -1, _id: -1 } }
+          : isTitle
+            ? { $sort: { title: 1, _id: 1 } }
+            : { $sort: { [sortField]: -1, _id: 1 } },
+        { $skip: (page - 1) * limit },
+        { $limit: limit }
+      ],
+      total: [{ $count: 'total' }]
+    }
+  });
+
+  const [result = {}] = await Film.aggregate(pipeline);
+  const films = result.films || [];
+  const total = result.total?.[0]?.total || 0;
 
   res.json({
     films: films.map(film => withPosterUrl(shapeFilmAggregates(film), req)),
     pagination: { page, limit, total, pages: Math.ceil(total / limit) },
-    sort: isNew ? 'createdAt' : sortField
+    sort: isNew ? 'createdAt' : isTitle ? 'title' : sortField
   });
 }));
 
