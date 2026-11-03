@@ -126,6 +126,78 @@ after(async () => {
   try { fs.rmSync(dbPath, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
+test('DELETE vibe: удаляет оценку, событие, баллы, счётчик и отвязывает watch', async () => {
+  const Watch = require('../src/models/Watch');
+  const user = await createUser();
+  const film = await createFilm('Отмена вайба');
+  const token = signAccessToken(user._id);
+  const watch = await Watch.create({ userId: user._id, filmId: film._id, watchedAt: new Date() });
+
+  const created = await call('/api/ratings', {
+    method: 'POST',
+    token,
+    body: { filmId: String(film._id), vibe: 7, watchId: String(watch._id) }
+  });
+  assert.equal(created.status, 201, created.text);
+  const ratingId = created.json.rating._id;
+
+  const linked = await Watch.findById(watch._id);
+  assert.equal(String(linked.ratingId), String(ratingId));
+
+  const response = await call(`/api/ratings/${ratingId}`, { method: 'DELETE', token });
+  assert.equal(response.status, 200, response.text);
+  assert.equal(response.json.deleted, true);
+
+  assert.equal(await Rating.countDocuments({ userId: user._id, filmId: film._id }), 0);
+  assert.equal(await Event.countDocuments({ type: 'vibe' }), 0);
+  assert.equal(await Action.countDocuments({ userId: user._id, type: 'rating' }), 0);
+
+  const userAfter = await User.findById(user._id);
+  assert.equal(userAfter.counters.vibes, 0);
+  assert.equal(userAfter.totalPoints, 0);
+
+  const unlinked = await Watch.findById(watch._id);
+  assert.equal(unlinked.ratingId, null);
+});
+
+test('DELETE full-оценку отменить нельзя', async () => {
+  const user = await createUser();
+  const film = await createFilm('Полная не отменяется');
+  const token = signAccessToken(user._id);
+
+  const created = await call('/api/ratings', {
+    method: 'POST',
+    token,
+    body: { filmId: String(film._id), scores: scores(8), vibe: 8 }
+  });
+  assert.equal(created.status, 201, created.text);
+
+  const response = await call(`/api/ratings/${created.json.rating._id}`, { method: 'DELETE', token });
+  assert.equal(response.status, 400, response.text);
+  assert.equal(response.json.error.code, 'FULL_RATING_CANNOT_BE_CANCELLED');
+  assert.equal(await Rating.countDocuments({ userId: user._id }), 1);
+});
+
+test('DELETE чужого vibe возвращает 404', async () => {
+  const owner = await createUser();
+  const stranger = await createUser();
+  const film = await createFilm('Чужой вайб');
+
+  const created = await call('/api/ratings', {
+    method: 'POST',
+    token: signAccessToken(owner._id),
+    body: { filmId: String(film._id), vibe: 8 }
+  });
+
+  const response = await call(`/api/ratings/${created.json.rating._id}`, {
+    method: 'DELETE',
+    token: signAccessToken(stranger._id)
+  });
+
+  assert.equal(response.status, 404, response.text);
+  assert.equal(await Rating.countDocuments({ _id: created.json.rating._id }), 1);
+});
+
 // ─────────────────────────── VIBE ───────────────────────────
 
 test('лайт-оценка: только vibe, баллы 0, counters.ratings не растёт', async () => {

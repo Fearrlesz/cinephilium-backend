@@ -3,6 +3,8 @@ const mongoose = require('mongoose');
 const Rating  = require('../models/Rating');
 const Film    = require('../models/Film');
 const User    = require('../models/User');
+const Event   = require('../models/Event');
+const Watch   = require('../models/Watch');
 const { authenticate } = require('../middleware/auth');
 const { validateObjectId } = require('../middleware/validate');
 const { writeLimiter, ratingLimiter } = require('../middleware/security');
@@ -17,7 +19,7 @@ const {
   weightsArrayToObject,
   weightsObjectToArray
 } = require('../config/scoring');
-const { addPoints } = require('../utils/points');
+const { addPoints, removePointsByAction } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { withPosterUrl } = require('../utils/poster');
 const { createEvent, updateAchievements } = require('../utils/helpers');
@@ -393,6 +395,44 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
   } catch (err) {
     throw err;
   }
+}));
+
+// DELETE /api/ratings/:id — отмена vibe-оценки.
+// DECISION: F10/1A — отменять можно только vibe: full-оценка не удаляется,
+// иначе пользователь теряет 15 критериев и текст одним кликом. Отмена
+// возвращает счётчик vibe, снимает 2 балла, удаляет событие ленты и отвязывает
+// запись дневника; комментарии и рецензии не трогаем — это отдельные сущности.
+router.delete('/:id', writeLimiter, authenticate, validateObjectId('id'), asyncHandler(async (req, res, next) => {
+  if (checkValidation(req, next)) return;
+
+  const rating = await Rating.findOne({ _id: req.params.id, userId: req.userId });
+
+  if (!rating) {
+    throw new NotFoundError('Оценка не найдена');
+  }
+
+  if ((rating.completeness || 'full') !== 'vibe') {
+    throw new AppError(
+      'FULL_RATING_CANNOT_BE_CANCELLED',
+      'Полную оценку нельзя отменить',
+      400
+    );
+  }
+
+  await Watch.updateMany(
+    { userId: req.userId, filmId: rating.filmId, ratingId: rating._id },
+    { $set: { ratingId: null } }
+  );
+  await Event.deleteMany({
+    userId: req.userId,
+    type: 'vibe',
+    contentId: rating._id
+  });
+  await Rating.deleteOne({ _id: rating._id });
+  await incCounter(req.userId, 'vibes', -1);
+  await removePointsByAction(req.userId, req.userId, rating._id, 'rating');
+
+  res.json({ deleted: true, filmId: rating.filmId });
 }));
 
 // GET /api/ratings/user
