@@ -1,6 +1,30 @@
-# Changelog — Cinephilium 6.0
+# Changelog — Cinephilium 6.0.1
 
 **Дата и время среза: 03.11.2026 (Europe/Moscow, UTC+03:00)**
+
+## 6.0.1 — сортировка оценок в профиле
+
+**Дата: 03.11.2026.**
+
+### Смысл
+
+Вкладка `/users/:id/ratings` пагинирована, поэтому клиентская сортировка
+«новые/старые/высокие/низкие» не могла работать по всему списку. Сортировка
+перенесена в запрос.
+
+### API
+
+`GET /api/users/:id/ratings?sort=new|old|high|low`:
+
+- default `new` — `createdAt desc` (B9/3A), неизвестное значение → `new`;
+- `old` — `createdAt asc`;
+- `high` / `low` — `combinedScore` по убыванию/возрасту; vibe без балла
+  (`combinedScore: 0`) идёт после full-оценок.
+
+### Проверка
+
+`node --test tests/profile-tabs.test.js` — 22/22, включая новый тест на четыре
+сортировки и fallback. Живой прод не проверялся.
 
 ## 6.0 — серверные фильтры каталога
 

@@ -69,12 +69,14 @@ async function createFilm(title = 'Фильм') {
   return Film.create({ tmdbId: 500000 + filmSeq, title });
 }
 
-async function createRating({ userId, filmId, completeness = 'full', createdAt }) {
+async function createRating({
+  userId, filmId, completeness = 'full', createdAt, combinedScore
+}) {
   const isFull = completeness === 'full';
   return Rating.create({
     userId, filmId, completeness, vibe: 7,
-    technicalScore: isFull ? 60 : 0,
-    combinedScore: isFull ? 60 : 0,
+    technicalScore: isFull ? (combinedScore ?? 60) : 0,
+    combinedScore: isFull ? (combinedScore ?? 60) : 0,
     ...(isFull ? { scores: fullScores(8) } : {}),
     ...(createdAt ? { createdAt } : {})
   });
@@ -278,6 +280,56 @@ test('/ratings: сортировка по createdAt desc (3A)', async () => {
   const { json } = await call(`/api/users/${user._id}/ratings`);
   assert.equal(json.items[0].film.title, 'Новая');
   assert.equal(json.items[1].film.title, 'Старая');
+});
+
+test('/ratings: сортировка new/old/high/low, vibe без балла не смешивается с оценками', async () => {
+  const user = await createUser();
+  const highFilm = await createFilm('Высокая');
+  const lowFilm = await createFilm('Низкая');
+  const vibeFilm = await createFilm('Вайб');
+
+  await createRating({
+    userId: user._id, filmId: highFilm._id,
+    createdAt: new Date('2026-01-01T00:00:00Z'), combinedScore: 90
+  });
+  await createRating({
+    userId: user._id, filmId: lowFilm._id,
+    createdAt: new Date('2026-05-01T00:00:00Z'), combinedScore: 55
+  });
+  await createRating({
+    userId: user._id, filmId: vibeFilm._id, completeness: 'vibe',
+    createdAt: new Date('2026-06-01T00:00:00Z')
+  });
+
+  const newest = await call(`/api/users/${user._id}/ratings?sort=new`);
+  assert.deepEqual(
+    newest.json.items.map(item => item.film.title),
+    ['Вайб', 'Низкая', 'Высокая']
+  );
+
+  const oldest = await call(`/api/users/${user._id}/ratings?sort=old`);
+  assert.deepEqual(
+    oldest.json.items.map(item => item.film.title),
+    ['Высокая', 'Низкая', 'Вайб']
+  );
+
+  const highest = await call(`/api/users/${user._id}/ratings?sort=high`);
+  assert.deepEqual(
+    highest.json.items.map(item => item.film.title),
+    ['Высокая', 'Низкая', 'Вайб']
+  );
+
+  const lowest = await call(`/api/users/${user._id}/ratings?sort=low`);
+  assert.deepEqual(
+    lowest.json.items.map(item => item.film.title),
+    ['Низкая', 'Высокая', 'Вайб']
+  );
+
+  const fallback = await call(`/api/users/${user._id}/ratings?sort=unknown`);
+  assert.deepEqual(
+    fallback.json.items.map(item => item.film.title),
+    ['Вайб', 'Низкая', 'Высокая']
+  );
 });
 
 test('/ratings: скрытый профиль — 404 чужим и анониму, владельцу и админу — 200', async () => {

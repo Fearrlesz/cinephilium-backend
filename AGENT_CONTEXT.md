@@ -139,8 +139,10 @@
    - Вкладки `GET /api/users/:id/{ratings,reviews,comments}` — `{ items, pagination }`,
      `canViewProfile` → 404, статус-фильтр (approved для чужих, всё для владельца/админа).
      `:id = me` работает для всех трёх.
-   - `/ratings` — все оценки (vibe + full) с `completeness`, сортировка по дате;
-     `counters.ratings` (только full) не равен `pagination.total` (все) — намеренно.
+   - `/ratings` — все оценки (vibe + full) с `completeness`;
+     `?sort=new|old|high|low`, default `new`, неизвестный → `new`; `high/low` по
+     `combinedScore`, vibe после full. `counters.ratings` (только full) не равен
+     `pagination.total` (все) — намеренно.
    - `/comments` — оба `targetType`; у review-комментария `target` — популенная рецензия,
      у film — `null`.
    - `User.pinnedAchievement: String | null` (без индекса) + `PUT/GET
@@ -517,7 +519,8 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   админ-очередь, видимость ника скрытого автора, миграция.
 
 - Что покрыто B9-тестами (`profile-tabs.test.js`): карточка без legacy-массивов,
-  пагинация и `completeness` в `/ratings`, сортировка по дате, `counters.ratings`
+  пагинация и `completeness` в `/ratings`, сортировка по дате и
+  `new/old/high/low`, `counters.ratings`
   против `pagination.total`, status-фильтр в `/reviews` и `/comments`, оба
   `targetType`, `:id = me`, 404 скрытого профиля для всех трёх вкладок,
   pinnedAchievement (установка/снятие/`ACHIEVEMENT_NOT_EARNED`/потерянное достижение),

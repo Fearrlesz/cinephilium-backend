@@ -359,7 +359,7 @@ router.get('/:id/likes', validateObjectId('id'), asyncHandler(async (req, res, n
 // counters.ratings (только full) намеренно не равен pagination.total.
 
 // GET /api/users/:id/ratings
-// Сортировка зафиксирована по дате (B9/3A), параметра ?sort= нет.
+// ?sort=new|old|high|low (по умолчанию new — B9/3A). См. listRatings.
 router.get('/:id/ratings', asyncHandler(async (req, res) => {
   const { target } = await loadTabContext(req);
   res.json(await listRatings(target._id, req.query, req));

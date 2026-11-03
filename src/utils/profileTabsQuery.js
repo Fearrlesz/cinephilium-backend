@@ -94,16 +94,28 @@ function presentComment(comment, req) {
   };
 }
 
-// DECISION: B9/3A — сортировка по дате создания, новые сверху. Параметр ?sort=
-// в B9 не добавляется (это была бы 3C), поэтому сортировка фиксирована.
+// DECISION: F8 follow-up — вернули сортировку оценок в профиле.
+// `sort=new|old|high|low`; неизвестное значение безопасно падает в `new`
+// (B9/3A остаётся дефолтом). Для high/low vibe-оценки без combinedScore
+// идут после full-оценок: completeness 'full' < 'vibe' лексикографически,
+// поэтому сортировка по completeness ascending не смешивает «—» с баллами.
+const RATING_SORTS = {
+  new:  { createdAt: -1, _id: -1 },
+  old:  { createdAt: 1, _id: 1 },
+  high: { completeness: 1, combinedScore: -1, createdAt: -1, _id: -1 },
+  low:  { completeness: 1, combinedScore: 1, createdAt: -1, _id: -1 }
+};
+
 async function listRatings(userId, query, req) {
   const { page, limit, skip } = parsePaging(query);
   const filter = { userId };
+  const sortKey = String(query.sort || 'new').toLowerCase();
+  const sort = RATING_SORTS[sortKey] || RATING_SORTS.new;
 
   const [items, total] = await Promise.all([
     Rating.find(filter)
       .populate('filmId', FILM_FIELDS)
-      .sort({ createdAt: -1, _id: -1 })
+      .sort(sort)
       .skip(skip)
       .limit(limit),
     Rating.countDocuments(filter)
