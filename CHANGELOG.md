@@ -1,6 +1,36 @@
-# Changelog — Cinephilium 6.0.1
+# Changelog — Cinephilium 6.0.2
 
 **Дата и время среза: 03.11.2026 (Europe/Moscow, UTC+03:00)**
+
+## 6.0.2 — отмена вайба
+
+**Дата: 03.11.2026.**
+
+### Смысл
+
+Вайб можно было поставить, но не снять. Пользователь оставался с оценкой,
+которую не хотел, а счётчики/баллы/событие/дневник нельзя было откатить
+согласованно. Добавлена отмена только vibe-оценки; полная оценка
+по-прежнему не удаляется.
+
+### API
+
+`DELETE /api/ratings/:id` (auth, `writeLimiter`):
+
+- владелец и `completeness: 'vibe'`; иначе `404 NOT_FOUND` / `400
+  FULL_RATING_CANNOT_BE_CANCELLED`;
+- удаляет `Rating`, `Action` типа `rating`, `Event` типа `vibe` с
+  `contentId = ratingId`; отвязывает `Watch.ratingId`;
+- `counters.vibes -1`, `totalPoints -2`; ответ `{ deleted: true, filmId }`.
+
+`GET /api/events` для `vibe` отдаёт `metadata.vibe` (1–10) и `score: null`;
+фронт показывает `вайб N`.
+
+### Проверка
+
+`node --test tests/vibe-rating.test.js` — 17/17, включая отмену (оценка,
+событие, Action, счётчик, баллы, Watch), запрет full и чужую оценку.
+`node --check` изменённых файлов — OK. Живой прод не проверялся.
 
 ## 6.0.1 — сортировка оценок в профиле
 

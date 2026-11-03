@@ -1,6 +1,7 @@
 # Контекст проекта для следующего агента
 
-**Дата среза:** 29.10.2026  
+**Дата среза:** 03.11.2026  
+**Версия:** 6.0.2  
 **Ветка:** `feature/p1-vibe-ratings`  
 **Репозиторий:** https://github.com/Fearrlesz/cinephilium-backend  
 **Фронтенд:** https://github.com/Fearrlesz/cinephilium-frontend
@@ -20,7 +21,7 @@
 - Бэкенд: Node.js + Express 5 + MongoDB (Mongoose 9), JWT, bcrypt, TMDB.
 - Фронтенд: отдельный репозиторий, React 18 (CRA 5), Vercel.
 - Прод: Render (API), MongoDB Atlas, Vercel (фронт).
-- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 5.9).
+- Документация версии: backend `README.md` / `CHANGELOG.md` (сейчас 6.0.2).
 
 ### Ключевые продуктовые правила
 
@@ -162,6 +163,17 @@
     - Регулярка экранируется через `escapeRegex`; фильтр по рейтингу —
       `votesCount > 0` / `= 0` после `FILM_STATS_STAGES`.
     - Тесты: `tests/catalog-filters.test.js` — 6/6.
+
+14. **6.0.2 — отмена вайба — реализована в этой ветке.**
+    - `DELETE /api/ratings/:id` (auth, `writeLimiter`): только владелец и
+      `completeness: 'vibe'`; full → `400 FULL_RATING_CANNOT_BE_CANCELLED`,
+      чужая/нет → `404 NOT_FOUND`.
+    - Удаляет `Rating`, `Action` `rating`, `Event` `vibe` с
+      `contentId = ratingId`; отвязывает `Watch.ratingId`; `counters.vibes -1`,
+      `totalPoints -2`; ответ `{ deleted: true, filmId }`.
+    - Событие `vibe` хранит `metadata.vibe` (1–10), `score: null`; фронт
+      показывает `вайб N`, а не generic-фразу.
+    - Тесты: `tests/vibe-rating.test.js` — 17/17 (отмена, full-запрет, чужая).
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
