@@ -1,6 +1,37 @@
-# Changelog — Cinephilium 5.9
+# Changelog — Cinephilium 6.0
 
-**Дата и время среза: 29.10.2026 (Europe/Moscow, UTC+03:00)**
+**Дата и время среза: 03.11.2026 (Europe/Moscow, UTC+03:00)**
+
+## 6.0 — серверные фильтры каталога
+
+**Дата: 03.11.2026.**
+
+### Смысл
+
+Фронт получил отдельный каталог всей библиотеки. Чтобы фильтры не были
+декоративными, `GET /api/films` теперь фильтрует и считает `total` на сервере,
+а не отдаёт всю коллекцию с сортировкой.
+
+### API
+
+| Метод | Путь | Параметры | Ответ |
+|---|---|---|---|
+| GET | `/api/films` | `q`, `genre`, `yearFrom`, `yearTo`, `rated`, `sort`, `page`, `limit` | `{ films, pagination: {page,limit,total,pages}, sort }` |
+| GET | `/api/films/facets` | — | `{ genres: [{value,count}], years: {min,max} }` |
+
+- `q` — экранированный regex по `title` (регистронезависимо), до 100 символов.
+- `genre` — точное значение из `Film.genres`.
+- `yearFrom/yearTo` — диапазон `Film.year`.
+- `rated` — `with|without` (также `1|0`): `votesCount > 0` / `= 0`.
+- `sort` — `technical|vibe|combined|new|title`; `title` — новый, по алфавиту.
+- `pagination.total` — после всех фильтров.
+- `/facets` объявлен до `/:id`, иначе `facets` перехватывается как id.
+
+### Проверка
+
+- `node --test tests/catalog-filters.test.js` — 6/6: q, escaped metacharacters,
+  genre+year, rated, title/new sort + pagination, facets.
+- Живой прод не проверялся.
 
 ## 5.9 — B9: вкладки профиля и закреплённое достижение
 
