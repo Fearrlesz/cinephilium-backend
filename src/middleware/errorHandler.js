@@ -34,17 +34,21 @@ function errorHandler(err, req, res, next) {
     statusCode = 400;
     code = 'VALIDATION_ERROR';
     message = 'Некорректный ID';
- 
   } else if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
     statusCode = 401;
     code = 'UNAUTHORIZED';
     message = 'Невалидный токен';
   } else if (err.type === 'entity.parse.failed') {
     // Битый JSON от body-parser: без этой ветки уходил как 500.
-    statusCode = 400;} else if (err.code === 11000) {
+    statusCode = 400;
+    code = 'INVALID_JSON';
+    message = 'Некорректный JSON в теле запроса';
+  } else if (err.code === 11000) {
     statusCode = 409;
     code = 'CONFLICT';
+
     const field = Object.keys(err.keyPattern || {})[0] || null;
+
     console.warn('[WARN] E11000 duplicate key', {
       field,
       keyValue: err.keyValue,
@@ -52,10 +56,8 @@ function errorHandler(err, req, res, next) {
       path: req.path,
       method: req.method
     });
+
     message = 'Ресурс уже существует';
-}
-    code = 'INVALID_JSON';
-    message = 'Некорректный JSON в теле запроса';
   } else if (err.type === 'entity.too.large') {
     statusCode = 413;
     code = 'PAYLOAD_TOO_LARGE';
