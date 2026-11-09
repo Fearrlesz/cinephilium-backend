@@ -1,7 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser');
-const compression = require('compression');
+const compression = require('compression'); 
 
 // Безопасность
 const {
