@@ -38,10 +38,52 @@ let cacheBytes = 0;
 // не гоняем N одинаковых запросов в TMDB, а ждём один.
 const inflight = new Map();
 
+// Постеры кэшируются как `immutable` на год, поэтому ошибку прокси нельзя
+// отдавать с тем же кэшированием: иначе 502 из-за временного сбоя TMDB
+// «залипнет» в браузере навсегда.
 function sendError(res, statusCode, message) {
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  ensureCors(res);
   res.end(JSON.stringify({ error: message }));
+}
+
+function headerOf(res, name) {
+  return typeof res.getHeader === 'function' ? res.getHeader(name) : undefined;
+}
+
+// Ответ прокси одинаков для всех посетителей, поэтому ACAO можно ставить `*`.
+// Нужен он затем, что фронтенд грузит постер в canvas с crossOrigin='anonymous'
+// (шеринг-карточка): без ACAO картинка не попадает на canvas вовсе.
+// Express-путь получает заголовок от общего cors-мидлвара (src/config/cors.js),
+// а standalone-ронт Vercel (`api/`) этого мидлвара не проходит — там ставим сами.
+function ensureCors(res) {
+  if (headerOf(res, 'Access-Control-Allow-Origin')) return;
+  res.setHeader('Access-Control-Allow-Origin', '*');
+}
+
+// `res.setHeader('Vary', ...)` ЗАТИРАЕТ `Vary: Origin`, который поставил
+// cors-мидлвар. Потерянный `Vary: Origin` — это ответ без ACAO, уехавший в
+// общий кэш браузера на год (immutable): следующий запрос с `Origin`
+// (canvas) получал отравленную запись и падал без единой строчки в консоли.
+// Поэтому Vary только дополняем, никогда не перезаписываем.
+function appendVary(res, value) {
+  const values = [];
+  const add = raw => {
+    String(raw === undefined || raw === null ? '' : raw)
+      .split(',')
+      .map(item => item.trim())
+      .filter(Boolean)
+      .forEach(token => {
+        if (!values.some(existing => existing.toLowerCase() === token.toLowerCase())) {
+          values.push(token);
+        }
+      });
+  };
+  add(headerOf(res, 'Vary'));
+  add(value);
+  res.setHeader('Vary', values.join(', '));
 }
 
 function imageError(code) {
@@ -98,7 +140,8 @@ function sendImage(res, entry) {
   res.setHeader('Content-Length', entry.buffer.length);
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.setHeader('ETag', entry.etag);
-  res.setHeader('Vary', 'Accept-Encoding');
+  ensureCors(res);
+  appendVary(res, 'Accept-Encoding');
   res.end(entry.buffer);
 }
 
@@ -106,6 +149,10 @@ function sendNotModified(res, entry) {
   res.statusCode = 304;
   res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
   res.setHeader('ETag', entry.etag);
+  // 304 браузер склеивает с закэшированным ответом, но CORS-проверка смотрит
+  // и на него: без этих заголовков canvas-запрос после ревалидации отвалится.
+  ensureCors(res);
+  appendVary(res, 'Accept-Encoding');
   res.end();
 }
 

@@ -150,7 +150,7 @@
      /api/users/me/pinned-achievement`; `400 ACHIEVEMENT_NOT_EARNED` для неполученного;
      потерянное достижение читается как `null` с `[WARN]`.
    - Миграция `scripts/add-pinned-achievement.js` — нужна до деплоя.
-   - **303 теста, все зелёные** (см. §8).
+   - **309 тестов, все зелёные** (см. §8).
 
 13. **6.0 — серверные фильтры каталога — реализованы в этой ветке.**
     - `GET /api/films` принимает `q` (экранированный regex по `title`, до 100),
@@ -253,7 +253,11 @@ tests/                 node:test
 2. `helmet`;
 3. `compression` — gzip JSON, картинки не трогает;
 4. прокси постеров `/api/tmdb-image` и алиас `/api/poster/:size/*` — до общего лимита,
-   со своим `imageLimiter` (1200/мин);
+   со своим `imageLimiter` (1200/мин); отдаёт `Access-Control-Allow-Origin` (нужен
+   canvas в шеринг-карточке) и **дополняет** `Vary`, а не перезаписывает его:
+   `Vary: Origin` от `cors` терять нельзя, иначе ответ без ACAO уезжает в кэш
+   браузера на год (`immutable`) и ломает последующие CORS-загрузки (C-2).
+   Ошибки прокси — `Cache-Control: no-store`;
 5. `globalLimiter` (200/мин на IP);
 6. `express.json({ limit: '100kb' })`;
 7. `cookieParser()`;
@@ -464,12 +468,13 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **303**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **309**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
   + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
   + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8)
-  + 21 в `tests/profile-tabs.test.js` (B9) + 5 в `tests/rating-privacy.test.js` (C-1).
+  + 21 в `tests/profile-tabs.test.js` (B9) + 5 в `tests/rating-privacy.test.js` (C-1)
+  + 6 в `tests/poster-cors.test.js` (C-2).
 - Эти одиннадцать файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
@@ -484,6 +489,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:targets       # 23/23
   npm run test:tabs          # 21/21
   npm run test:rating-privacy # 5/5
+  npm run test:poster-cors   # 6/6, Mongo не нужен
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -818,7 +824,7 @@ achievementsCount } }`; массивы `ratings`, `reviews`, `comments`, `watche
    `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
    `npm run test:watchlist` (17/17), `npm run test:likes` (19/19),
    `npm run test:targets` (23/23) и `npm run test:tabs` (21/21) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 303/303; если нет — см. §8.
+3. Если есть Mongo — `npm test` — 309/309; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `Comment.js`,
    `reviews.routes.js`, `admin.routes.js`, `Watch.js`, `watches.routes.js`,

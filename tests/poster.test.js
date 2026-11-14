@@ -214,6 +214,9 @@ async function invokeImageHandler(query, method = 'GET', upstreamFetch, headers 
   response.setHeader = (name, value) => {
     response.headers[name.toLowerCase()] = value;
   };
+  // Прокси читает уже выставленные заголовки (Vary от cors-мидлвара), поэтому
+  // заглушка обязана уметь их отдавать.
+  response.getHeader = name => response.headers[name.toLowerCase()];
   let body = '';
   response.setEncoding('utf8');
   response.on('data', chunk => { body += chunk; });

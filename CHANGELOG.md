@@ -2,6 +2,45 @@
 
 **Дата и время среза: 03.11.2026 (Europe/Moscow, UTC+03:00)**
 
+## C-2 — CORS у прокси постеров (security-фикс)
+
+**Дата: 14.11.2026.**
+
+### Смысл
+
+Постер не попадал в шеринг-карточку: canvas грузит картинку с
+`crossOrigin='anonymous'`, а прокси отдавал её без `Access-Control-Allow-Origin`
+и при этом затирал `Vary` значением `Accept-Encoding`. Обычный `<img>` на
+странице фильма качал тот же URL без `Origin` (значит, и без ACAO) и клал ответ
+в кэш браузера на год — `Cache-Control: immutable`. Дальше canvas-запрос получал
+из кэша запись без CORS, `loadImage` молча возвращал `null`, и карточка рисовала
+градиент. У всех и всегда, пока кэш не очистят вручную.
+
+Фикс: `Vary` только дополняется (`Vary: Origin, Accept-Encoding`), ACAO ставится
+на 200, 304 и ошибки (`*`, если `cors()` не поставил конкретный origin), ошибки
+прокси больше не кэшируются (`Cache-Control: no-store`). Фронтенд дополнительно
+качает постер через `fetch` → blob и просит его по отдельному
+`&variant=card` URL, чтобы старые отравленные записи кэша не мешали.
+
+### API
+
+- `GET /api/tmdb-image`, `GET /api/poster/:size/*path` — `Access-Control-Allow-Origin`
+  на 200/304/4xx-5xx; `Vary` больше не теряет `Origin`; `Cache-Control: no-store`
+  у ошибок.
+- Необязательный query-параметр `variant` (например `variant=card`) игнорируется —
+  это только ключ кэша для canvas-загрузки.
+- Формат тела, ETag и кэширование успешных ответов (`public, max-age=31536000,
+  immutable`) не изменились.
+
+### Проверка
+
+`node --test tests/poster-cors.test.js` — 6/6: связка `cors()` + handler через
+настоящий express (`Vary: Origin` не теряется, ACAO равен origin), standalone
+режим Vercel (`ACAO: *`), 304 с CORS, отсутствие дублей в `Vary`, `no-store`
+у ошибок. `tests/poster.test.js` не менял ожиданий, кроме заглушки `res`
+(`getHeader`). Сами постеры на проде не проверялись: постер в живом браузере
+нужно перезагрузить один раз, чтобы запись кэша обновилась.
+
 ## C-1 — приватность Rating (security-фикс)
 
 **Дата: 14.11.2026.**
