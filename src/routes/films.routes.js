@@ -21,6 +21,7 @@ const {
 const { addPoints }  = require('../utils/points');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
+const { toPublicRating } = require('../utils/ratingView');
 
 const asyncHandler = require('../utils/asyncHandler');
 const { NotFoundError, ValidationError, AppError } = require('../utils/errors');
@@ -171,9 +172,8 @@ router.get('/:id', validateObjectId('id'), asyncHandler(async (req, res, next) =
     // `|| 0` — потому что агрегат возвращает сырой документ, без Mongoose-дефолтов.
     likesCount: film.likesCount || 0,
     liked,
-    userRating: userRating
-      ? { ...userRating.toObject(), completeness: userRating.completeness || 'full' }
-      : null
+    // C-1: своя оценка — тоже белый список, ip/weight не отдаём даже владельцу.
+    userRating: userRating ? toPublicRating(userRating) : null
   });
 }));
 

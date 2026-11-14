@@ -15,6 +15,7 @@
     "test:likes": "node --test tests/film-likes.test.js",
     "test:targets": "node --test tests/comment-targets.test.js",
     "test:tabs": "node --test tests/profile-tabs.test.js",
+    "test:rating-privacy": "node --test tests/rating-privacy.test.js",
     "hooks:install": "git config core.hooksPath .githooks",
     "invite:new": "node scripts/new-invite.js"
   },

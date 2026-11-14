@@ -150,7 +150,7 @@
      /api/users/me/pinned-achievement`; `400 ACHIEVEMENT_NOT_EARNED` для неполученного;
      потерянное достижение читается как `null` с `[WARN]`.
    - Миграция `scripts/add-pinned-achievement.js` — нужна до деплоя.
-   - **298 тестов, все зелёные** (см. §8).
+   - **303 теста, все зелёные** (см. §8).
 
 13. **6.0 — серверные фильтры каталога — реализованы в этой ветке.**
     - `GET /api/films` принимает `q` (экранированный regex по `title`, до 100),
@@ -174,6 +174,20 @@
     - Событие `vibe` хранит `metadata.vibe` (1–10), `score: null`; фронт
       показывает `вайб N`, а не generic-фразу.
     - Тесты: `tests/vibe-rating.test.js` — 17/17 (отмена, full-запрет, чужая).
+
+15. **C-1 — приватность Rating — реализована в этой ветке.**
+    - `Rating.ip` → `select: false`; антифрод продолжает писать его, но читается
+      только явно: `.select('+ip')`.
+    - Публичные ответы больше не спредят `toObject()`: `utils/ratingView.js`
+      (`toPublicRating`, `REVIEW_RATING_SELECT`) в `ratings.routes.js` (vibe,
+      повторный vibe, full, `/user`, `/:id/details`) и `films.routes.js`
+      (`userRating`). Владельцу `ip`/`weight` тоже не отдаются.
+    - `Review.ratingId` populate'ится с явным select (4 места в
+      `reviews.routes.js` + `utils/profileTabsQuery.js`), рецензии отдаются
+      через `utils/reviewView.js#toPublicReview`.
+    - Тесты: `tests/rating-privacy.test.js` — 5/5: рекурсивный обход JSON всех
+      11 публичных ответов на ключи `ip`/`weight`/`vibeCreatedAt` и значение IP,
+      сохранность контракта фронта (scores/blockWeights/nickname), `ip` в БД.
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -285,8 +299,8 @@ tests/                 node:test
 | `genrePreset`, `blockWeights` | только у full |
 | `technicalScore`, `combinedScore` | 10..100 у full; `0` у vibe |
 | `textReview` | короткий текст к оценке (<=2000), только full |
-| `weight` | 0..1, анти-накрутка |
-| `ip` | IP последнего сохранения |
+| `weight` | 0..1, анти-накрутка (наружу не отдаётся) |
+| `ip` | IP последнего сохранения, `select: false`, наружу не отдаётся |
 | `vibeCreatedAt` | когда создана vibe (для капа), `select: false` |
 
 Правила:
@@ -297,6 +311,12 @@ tests/                 node:test
 - `weight` при апгрейде берётся из существующей записи (включая `0`),
   `ip` — текущий, `createdAt` не меняется.
 - Даунгрейда нет.
+- **C-1 (2026-11-14):** наружу уходит только белый список полей —
+  `utils/ratingView.js#toPublicRating` (`_id, userId, filmId, completeness,
+  genrePreset, blockWeights, scores, vibe, technicalScore, combinedScore,
+  textReview, createdAt`). `ip`, `weight`, `vibeCreatedAt` не отдаются даже
+  владельцу и не попадают в `Review.ratingId` (`REVIEW_RATING_SELECT`).
+  Новое поле схемы само не утечёт: его надо добавить в список осознанно.
 
 ### Остальные коллекции
 
@@ -444,13 +464,13 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **298**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **303**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
   + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
   + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8)
-  + 21 в `tests/profile-tabs.test.js` (B9).
-- Эти десять файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 21 в `tests/profile-tabs.test.js` (B9) + 5 в `tests/rating-privacy.test.js` (C-1).
+- Эти одиннадцать файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
 
   ```bash
   npm run test:vibe          # 14/14
@@ -463,6 +483,7 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:likes         # 19/19
   npm run test:targets       # 23/23
   npm run test:tabs          # 21/21
+  npm run test:rating-privacy # 5/5
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -797,7 +818,7 @@ achievementsCount } }`; массивы `ratings`, `reviews`, `comments`, `watche
    `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
    `npm run test:watchlist` (17/17), `npm run test:likes` (19/19),
    `npm run test:targets` (23/23) и `npm run test:tabs` (21/21) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 298/298; если нет — см. §8.
+3. Если есть Mongo — `npm test` — 303/303; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `Comment.js`,
    `reviews.routes.js`, `admin.routes.js`, `Watch.js`, `watches.routes.js`,

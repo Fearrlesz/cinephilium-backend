@@ -22,6 +22,7 @@ const {
 const { addPoints, removePointsByAction } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { withPosterUrl } = require('../utils/poster');
+const { toPublicRating } = require('../utils/ratingView');
 const { createEvent, updateAchievements } = require('../utils/helpers');
 const { findOwnWatch, setWatchLink } = require('../utils/watchLink');
 
@@ -161,13 +162,13 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
           { new: true, runValidators: true }
         );
         await linkWatch(updated._id);
+        // C-1: никакого ...toObject() — только белый список полей.
+        const presented = toPublicRating(updated);
+        presented.scores = null;
+        presented.blockWeights = null;
+        presented.genrePreset = null;
         return res.status(201).json({
-          rating: {
-            ...updated.toObject(),
-            scores: null,
-            blockWeights: null,
-            genrePreset: null
-          },
+          rating: presented,
           technicalScore: 0,
           combinedScore: 0,
           vibe,
@@ -223,13 +224,12 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
 
       await linkWatch(rating._id);
 
+      const presented = toPublicRating(rating);
+      presented.scores = null;
+      presented.blockWeights = null;
+      presented.genrePreset = null;
       return res.status(201).json({
-        rating: {
-          ...rating.toObject(),
-          scores: null,
-          blockWeights: null,
-          genrePreset: null
-        },
+        rating: presented,
         technicalScore: 0,
         combinedScore: 0,
         vibe,
@@ -385,7 +385,8 @@ router.post('/', writeLimiter, ratingLimiter, authenticate, asyncHandler(async (
     await linkWatch(rating._id);
 
     res.status(201).json({
-      rating,
+      // C-1: полная оценка тоже отдаётся белым списком, а не документом.
+      rating: toPublicRating(rating),
       technicalScore,
       combinedScore,
       vibe: effectiveVibe,
@@ -442,11 +443,11 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
       .populate('filmId')
       .sort({ createdAt: -1 });
 
-    res.json(ratings.map(rating => ({
-      ...rating.toObject(),
-      completeness: rating.completeness || 'full',
-      filmId: withPosterUrl(rating.filmId, req)
-    })));
+    res.json(ratings.map(rating => {
+      const presented = toPublicRating(rating);
+      presented.filmId = withPosterUrl(rating.filmId, req);
+      return presented;
+    }));
   } catch (error) {
     throw error;
   }
@@ -463,11 +464,11 @@ router.get('/:id/details', validateObjectId('id'), asyncHandler(async (req, res,
 
     if (!rating) throw new NotFoundError('Оценка не найдена');
 
-    res.json({
-      ...rating.toObject(),
-      completeness: rating.completeness || 'full',
-      filmId: withPosterUrl(rating.filmId, req)
-    });
+    // Роут публичный, поэтому отдаём только белый список: ip/weight/likes
+    // и служебные поля наружу не уходят даже под видом «деталей оценки».
+    const presented = toPublicRating(rating);
+    presented.filmId = withPosterUrl(rating.filmId, req);
+    res.json(presented);
   } catch (error) {
     throw error;
   }

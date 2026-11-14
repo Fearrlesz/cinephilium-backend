@@ -2,6 +2,50 @@
 
 **Дата и время среза: 03.11.2026 (Europe/Moscow, UTC+03:00)**
 
+## C-1 — приватность Rating (security-фикс)
+
+**Дата: 14.11.2026.**
+
+### Смысл
+
+`Rating.ip` писался «для антифрода», но уходил наружу: `GET /api/ratings/:id/details`
+без авторизации спредил документ вместе с `ip`, `weight`, `likes` и `userId`;
+рецензии и публичная вкладка профиля populate'или `ratingId` целиком, поэтому IP
+автора получал любой аноним. IP + ник + оценка — готовый датасет для деанона,
+нарушение собственной политики `/privacy#personal-data`, 152-ФЗ и GDPR.
+
+Фикс в две линии обороны: `ip` больше не выбирается из Mongo без явного
+`.select('+ip')`, а наружу уходит только белый список полей. `weight` остаётся
+selectable (на нём держатся гейты и сохранение веса при апгрейде), но в ответы
+не попадает.
+
+### API
+
+- `Rating.ip` — `select: false`; запись при vibe/full-апдейте не изменилась.
+- `utils/ratingView.js`: `toPublicRating()` и `REVIEW_RATING_SELECT` —
+  `_id, userId, filmId, completeness, genrePreset, blockWeights, scores, vibe,
+  technicalScore, combinedScore, textReview, createdAt`.
+- `POST /api/ratings` (vibe, повторный vibe, full), `GET /api/ratings/user`,
+  `GET /api/ratings/:id/details`, `userRating` в `GET /api/films/:id` —
+  отвечают DTO, без `ip`, `weight`, `vibeCreatedAt`, `likes`.
+- `Review.ratingId` во всех выдачах (`/api/reviews`, `/details/:id`, `/user`,
+  `/api/users/:id/reviews`) — явный select + `toPublicReview()`; `__v` больше
+  не утекает. `POST /api/reviews` — тоже.
+- Формат ответов для фронта не изменился: `scores`, `blockWeights`,
+  `genrePreset`, `userId.nickname`, `combinedScore`, `filmId` на месте.
+
+### Проверка
+
+`node --test tests/rating-privacy.test.js` — 5/5: рекурсивный обход JSON всех
+11 публичных ответов (ключи `ip`/`weight`/`vibeCreatedAt` и значение IP),
+контракт фронта, `ip` в БД под явным `select`, POST-ответы оценок и рецензий.
+Регрессия: 196/196 в 11 файлах на `mongodb-memory-server` (`vibe-rating`,
+`review-gating`, `comment-gating`, `profile-tabs`, `film-aggregates`,
+`film-likes`, `privacy`, `watchlist`, `watch-diary`, `comment-targets`,
+`catalog-filters`). Старые 112 в отдельных файлах (`regression`, `auth-invite`,
+`auth-refresh`, `contact`, `counters`, `errorHandler`, `poster`) — 112/112 на
+локальном `mongod` 127.0.0.1:27017. Итого 303/303. Живой прод не проверялся.
+
 ## 6.0.2 — отмена вайба
 
 **Дата: 03.11.2026.**

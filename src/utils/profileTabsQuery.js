@@ -8,6 +8,7 @@ const Rating  = require('../models/Rating');
 const Review  = require('../models/Review');
 const Comment = require('../models/Comment');
 const { withPosterUrl } = require('./poster');
+const { REVIEW_RATING_SELECT, toPublicRating } = require('./ratingView');
 const { parsePaging, paginationMeta } = require('./paging');
 
 const FILM_FIELDS = 'title poster posterPath year';
@@ -39,7 +40,9 @@ function presentReview(review, req) {
     id: review._id,
     film,
     filmId: film,
-    ratingId: review.ratingId,
+    // C-1: вкладка публичная, поэтому ratingId — белый список полей, а не
+    // populate-документ целиком (в нём были ip и weight автора).
+    ratingId: toPublicRating(review.ratingId),
     title: review.title,
     text: review.text,
     // B4: профиль перечисляет поля руками, поэтому флаг обязателен и здесь —
@@ -134,7 +137,7 @@ async function listReviews(userId, query, statusFilter, req) {
   const [items, total] = await Promise.all([
     Review.find(filter)
       .populate('filmId', FILM_FIELDS)
-      .populate('ratingId')
+      .populate('ratingId', REVIEW_RATING_SELECT)
       .sort({ createdAt: -1, _id: -1 })
       .skip(skip)
       .limit(limit),

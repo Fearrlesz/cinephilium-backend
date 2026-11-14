@@ -402,7 +402,8 @@ test('апгрейд vibe → full: тот же _id, weight сохранён, ip
     'createdAt должен сохраниться'
   );
 
-  const stored = await Rating.findById(ratingId);
+  // C-1: ip теперь select: false, аудит читает его явно.
+  const stored = await Rating.findById(ratingId).select('+ip');
   assert.equal(stored.completeness, 'full');
   assert.equal(stored.vibe, 9, 'vibe должен меняться (3A)');
   assert.equal(stored.weight, 0, 'weight: 0 должен сохраниться');

@@ -11,6 +11,8 @@ const { addPoints } = require('../utils/points');
 const { incCounter } = require('../utils/counters');
 const { updateAchievements } = require('../utils/helpers');
 const { withPosterUrl } = require('../utils/poster');
+const { REVIEW_RATING_SELECT } = require('../utils/ratingView');
+const { toPublicReview } = require('../utils/reviewView');
 const { requireRatingForFilm } = require('../utils/ratingGate');
 const { findOwnWatch, setWatchLink } = require('../utils/watchLink');
 
@@ -103,10 +105,11 @@ router.post('/', writeLimiter, [
     const reviewWithUser = await Review.findById(review._id)
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster posterPath')
-      .populate('ratingId');
+      .populate('ratingId', REVIEW_RATING_SELECT);
 
     res.json({
-      ...reviewWithUser.toObject(),
+      // C-1: белый список полей вместо ...toObject(); ratingId уже урезан.
+      ...toPublicReview(reviewWithUser),
       filmId: withPosterUrl(reviewWithUser.filmId, req)
     });
   } catch (error) {
@@ -120,11 +123,11 @@ router.get('/user', authenticate, asyncHandler(async (req, res, next) => {
     const reviews = await Review.find({ userId: req.userId })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster posterPath year')
-      .populate('ratingId')
+      .populate('ratingId', REVIEW_RATING_SELECT)
       .sort({ createdAt: -1 });
 
     res.json(reviews.map(review => ({
-      ...review.toObject(),
+      ...toPublicReview(review),
       filmId: withPosterUrl(review.filmId, req)
     })));
   } catch (error) {
@@ -140,7 +143,7 @@ router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res,
     const review = await Review.findById(req.params.id)
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster posterPath description director actors genres year')
-      .populate('ratingId');
+      .populate('ratingId', REVIEW_RATING_SELECT);
 
     if (!review) throw new NotFoundError('Рецензия не найдена');
 
@@ -162,7 +165,7 @@ router.get('/details/:id', validateObjectId('id'), asyncHandler(async (req, res,
     }
 
     res.json({
-      ...review.toObject(),
+      ...toPublicReview(review),
       filmId: withPosterUrl(review.filmId, req)
     });
   } catch (error) {
@@ -201,11 +204,11 @@ router.get('/:filmId', validateObjectId('filmId'), asyncHandler(async (req, res,
     })
       .populate('userId', 'nickname isAdmin')
       .populate('filmId', 'title poster posterPath')
-      .populate('ratingId')
+      .populate('ratingId', REVIEW_RATING_SELECT)
       .sort({ createdAt: -1 });
 
     res.json(reviews.map(review => ({
-      ...review.toObject(),
+      ...toPublicReview(review),
       filmId: withPosterUrl(review.filmId, req)
     })));
   } catch (error) {

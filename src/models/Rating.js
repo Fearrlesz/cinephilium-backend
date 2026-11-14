@@ -51,8 +51,13 @@ const ratingSchema = new mongoose.Schema({
   textReview:     { type: String, maxlength: 2000, default: '' },
   likes:          [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   // Анти-накрутка: вес голоса и IP, с которого ставилась оценка.
+  // weight намеренно остаётся selectable: полная оценка сохраняет вес
+  // существующей записи (ratings.routes.js), а гейты ищут weight: 0.
   weight:         { type: Number, default: 1, min: 0, max: 1 },
-  ip:             { type: String, default: '' },
+  // DECISION C-1: IP — персональные данные, наружу не отдаётся никогда.
+  // select: false — страховка второго уровня: даже `...toObject()` в новом
+  // роуте не вынесет его наружу. Читать явно: `.select('+ip')` в аудите.
+  ip:             { type: String, default: '', select: false },
   // Когда именно поставлена vibe-оценка. Нужно для дневного капа и не
   // сбрасывается при апгрейде: создание vibe уже израсходовало слот.
   vibeCreatedAt:  { type: Date, default: null, select: false }
