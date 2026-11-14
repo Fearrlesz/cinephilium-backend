@@ -106,12 +106,18 @@ tests/                 node:test, у каждого файла своя БД
 9. `notFoundHandler` → JSON 404;
 10. `errorHandler` → единый формат ошибок.
 
-`app.set('trust proxy', 1)` — приложение живёт за одним прокси (Render), а `req.ip` на
-Render/Cloudflare оказывается адресом edge-ноды Cloudflare, общим на тысячи людей.
-Поэтому все лимиты считают по `clientIp()`: сначала `cf-connecting-ip` (Cloudflare),
-потом `x-real-ip` (свой nginx), и только если их нет — `req.ip`.
-Если бэкенд когда-нибудь окажется открыт в интернет **без** прокси, эти заголовки нужно
-вырезать на входе (иначе клиент подделает IP и обойдёт лимиты).
+`app.set('trust proxy', 1)` — приложение живёт за одним прокси (Render). `req.ip` это
+последняя запись `x-forwarded-for`, её дописывает edge, поэтому подделать её клиент не
+может; число хопов поднимать нельзя — при обходе второго прокси `req.ip` станет
+значением из заголовка клиента.
+
+За Cloudflare `req.ip` — адрес edge-ноды, общий на тысячи людей, поэтому настоящий адрес
+берётся из `cf-connecting-ip`. Но заголовку верим только тогда, когда запрос действительно
+пришёл от этого прокси: `req.ip` должен попадать в сети Cloudflare (`CLOUDFLARE_PROXY_CIDRS`
+в `src/middleware/security.js`). `x-real-ip` принимается только от сетей из
+`TRUSTED_PROXY_CIDRS` (свой nginx), по умолчанию список пуст. Во всех остальных случаях
+лимиты считаются по `req.ip`: раньше заголовки читались слепо, и подделка
+`cf-connecting-ip: 1.2.3.4` давала свежее ведро на каждый запрос (C-2).
 
 ### Поток запроса на примере оценки
 
@@ -619,13 +625,18 @@ npm run test:watchlist   # только B6, тоже со своей in-memory M
 npm run test:likes       # только B7, тоже со своей in-memory MongoDB
 npm run test:targets     # только B8, тоже со своей in-memory MongoDB
 npm run test:tabs        # только B9, тоже со своей in-memory MongoDB
+npm run test:rating-privacy  # только C-1, тоже со своей in-memory MongoDB
+npm run test:poster-cors     # только CORS постеров, Mongo не нужен
+npm run test:rate-limit-ip   # только C-2, Mongo не нужен
 ```
 
-298 тестов на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
-14 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
+334 теста на `node:test`: 112 в основных файлах (нужен MongoDB на `127.0.0.1:27017`),
+17 в `vibe-rating.test.js`, 14 в `film-aggregates.test.js`, 15 в `comment-gating.test.js`,
 15 в `review-gating.test.js`, 23 в `watch-diary.test.js`, 25 в `privacy.test.js`,
-17 в `watchlist.test.js`, 19 в `film-likes.test.js`, 23 в `comment-targets.test.js`
-и 21 в `profile-tabs.test.js` — эти десять сами поднимают in-memory MongoDB.
+17 в `watchlist.test.js`, 19 в `film-likes.test.js`, 23 в `comment-targets.test.js`,
+22 в `profile-tabs.test.js`, 6 в `catalog-filters.test.js` и 5 в `rating-privacy.test.js`
+— эти двенадцать сами поднимают in-memory MongoDB; `poster-cors.test.js` (6) и
+`rate-limit-ip.test.js` (15) работают вообще без БД.
 У каждого файла своя БД, поэтому параллельный запуск безопасен.
 
 | Файл | Тестов |
@@ -637,7 +648,7 @@ npm run test:tabs        # только B9, тоже со своей in-memory M
 | `tests/errorHandler.test.js` | 9 |
 | `tests/poster.test.js` | 17 |
 | `tests/regression.test.js` | 33 |
-| `tests/vibe-rating.test.js` | 14 |
+| `tests/vibe-rating.test.js` | 17 |
 | `tests/film-aggregates.test.js` | 14 |
 | `tests/comment-gating.test.js` | 15 |
 | `tests/review-gating.test.js` | 15 |
@@ -646,7 +657,11 @@ npm run test:tabs        # только B9, тоже со своей in-memory M
 | `tests/watchlist.test.js` | 17 |
 | `tests/film-likes.test.js` | 19 |
 | `tests/comment-targets.test.js` | 23 |
-| `tests/profile-tabs.test.js` | 21 |
+| `tests/profile-tabs.test.js` | 22 |
+| `tests/catalog-filters.test.js` | 6 |
+| `tests/rating-privacy.test.js` | 5 |
+| `tests/poster-cors.test.js` | 6 |
+| `tests/rate-limit-ip.test.js` | 15 |
 
 `vibe-rating.test.js` не требует внешней Mongo: `npm run test:vibe`.
 `film-aggregates.test.js` тоже: `npm run test:aggregates` — смешанные оценки, только
@@ -678,6 +693,18 @@ vibe, только full, пустой фильм, `weight: 0`, участник�
 `targetType`, `:id = me`, 404 скрытого профиля для всех вкладок,
 pinnedAchievement (установка/снятие/ACHIEVEMENT_NOT_EARNED/потерянное достижение),
 порядок роутов, нетронутые разделы, миграция.
+`catalog-filters.test.js` — серверные фильтры каталога (6.0): `q`, жанры, годы, рейтинг,
+сортировки, пагинация и счётчики.
+`rating-privacy.test.js`: `npm run test:rating-privacy` — C-1: ни один из одиннадцати
+публичных ответов не содержит `ip`, `weight` и `vibeCreatedAt`, контракт фронта сохранён
+(`scores`, `blockWeights`, `nickname`), `ip` пишется в БД, но по умолчанию не читается.
+`poster-cors.test.js`: `npm run test:poster-cors` — прокси отдаёт
+`Access-Control-Allow-Origin` (и не перетирает уже выставленный выше по стеку), `Vary`
+дополняется, а не заменяется, 304 сохраняет CORS-заголовки, ошибки — `no-store`.
+`rate-limit-ip.test.js`: `npm run test:rate-limit-ip` — C-2: поддельные
+`cf-connecting-ip`/`x-real-ip` от чужого адреса игнорируются, сети Cloudflare и
+`TRUSTED_PROXY_CIDRS` работают, три интеграционных теста на настоящем
+`express-rate-limit` (ротация cf-заголовков с одного IP даёт 429).
 
 `auth-invite.test.js` проверяет регистрацию по коду, отзыв/просрочку/повторное использование,
 вход по никнейму, ограничения админских роутов и одноразовую ссылку сброса пароля.

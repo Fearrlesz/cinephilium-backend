@@ -14,25 +14,133 @@ function rateLimitHandler(message) {
   };
 }
 
-/**
- * Реальный IP клиента для лимитов.
+/* ── IP клиента для лимитов (C-2) ─────────────────────────────────────────
  *
- * На Render приложение стоит за Cloudflare, и `req.ip` при `trust proxy: 1`
- * оказывается IP edge-ноды Cloudflare, а не посетителя. Один такой IP делят
- * тысячи людей: лимит 200 запросов/мин выжигается чужими запросами, и 429
- * получают все — в том числе запросы постеров, которые уходят пачкой на
- * каждую страницу. Cloudflare отдаёт настоящий адрес в `cf-connecting-ip`,
- * свой reverse-proxy — в `x-real-ip`. Значения проверяем на валидный IP,
- * чтобы мусор в заголовке не ломал ключ.
+ * `trust proxy: 1` значит: единственная запись `x-forwarded-for`, которой можно
+ * верить, — последняя, её дописал edge-прокси Render. Всё, что клиент прислал
+ * сам, лежит левее и на ключ не влияет. На Render `req.ip` поэтому может
+ * оказаться адресом edge-ноды Cloudflare, общим на тысячи людей: лимит
+ * 200/мин выжигается чужими запросами. Настоящий адрес Cloudflare пишет в
+ * `cf-connecting-ip`, свой reverse-proxy — в `x-real-ip`.
+ *
+ * Заголовку верим ТОЛЬКО если запрос действительно пришёл от этого прокси —
+ * то есть адрес соединения (`req.ip`) лежит в его сетях. Раньше заголовки
+ * читались слепо, и любой, кто достучался до origin (onrender.com, health-check,
+ * прямой адрес), присылал `cf-connecting-ip: 1.2.3.4` и получал свежее ведро
+ * лимита: обходились authLimiter (брутфорс паролей), registerLimiter,
+ * ratingLimiter (накрутка), likeLimiter, contactLimiter, globalLimiter и
+ * imageLimiter. Подделать адрес соединения клиент не может — его пишет
+ * инфраструктура.
  */
-function clientIp(req) {
-  for (const header of ['cf-connecting-ip', 'x-real-ip']) {
-    const value = req.headers?.[header];
-    const ip = typeof value === 'string' ? value.trim() : '';
-    if (net.isIP(ip)) return ipKeyGenerator(ip);
-  }
-  return req.ip ? ipKeyGenerator(req.ip) : 'unknown';
+
+// https://www.cloudflare.com/ips/ — диапазоны меняются редко, но при
+// добавлении новых сетей Cloudflare список нужно обновить, иначе запросы через
+// них снова начнут делить одно ведро по адресу edge-ноды.
+const CLOUDFLARE_PROXY_CIDRS = [
+  '173.245.48.0/20',
+  '103.21.244.0/22',
+  '103.22.200.0/22',
+  '103.31.4.0/22',
+  '141.101.64.0/18',
+  '108.162.192.0/18',
+  '190.93.240.0/20',
+  '188.114.96.0/20',
+  '197.234.240.0/22',
+  '198.41.128.0/17',
+  '162.158.0.0/15',
+  '104.16.0.0/13',
+  '104.24.0.0/14',
+  '172.64.0.0/13',
+  '131.0.72.0/22',
+  '2400:cb00::/32',
+  '2606:4700::/32',
+  '2803:f800::/32',
+  '2405:b500::/32',
+  '2405:8100::/32',
+  '2a06:98c0::/29',
+  '2c0f:f248::/32'
+];
+
+/* `::ffff:1.2.3.4` — тот же IPv4, но в записи IPv6 (так его отдаёт Node на
+   dual-stack сокете). Приводим к обычному виду, иначе проверка сетей промахнётся. */
+function normalizeIp(value) {
+  if (typeof value !== 'string') return '';
+  const ip = value.trim();
+  const mapped = ip.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i);
+  return mapped ? mapped[1] : ip;
 }
+
+function toBlockList(cidrs) {
+  const list = new net.BlockList();
+  const maxPrefix = { 4: 32, 6: 128 };
+
+  for (const raw of cidrs) {
+    const [address, prefixRaw] = String(raw).trim().split('/');
+    const family = net.isIP(address);
+    const prefix = Number(prefixRaw);
+    if (!family || !Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix[family]) {
+      console.warn(`[security] пропускаю некорректную сеть прокси: ${raw}`);
+      continue;
+    }
+    try {
+      list.addSubnet(address, prefix, family === 6 ? 'ipv6' : 'ipv4');
+    } catch (error) {
+      console.warn(`[security] не удалось добавить сеть прокси ${raw}: ${error.message}`);
+    }
+  }
+
+  return list;
+}
+
+function isInList(list, ip) {
+  const family = net.isIP(ip);
+  if (!family) return false;
+  return list.check(ip, family === 6 ? 'ipv6' : 'ipv4');
+}
+
+function headerIp(req, header) {
+  const value = req.headers?.[header];
+  const raw = Array.isArray(value) ? value[0] : value;
+  const ip = normalizeIp(raw);
+  return net.isIP(ip) ? ip : '';
+}
+
+/* `TRUSTED_PROXY_CIDRS` — сети СВОИХ прокси (свой nginx), от которых принимаем
+   `x-real-ip`. По умолчанию пусто: заголовок не доверяем никому. */
+function configuredProxyCidrs() {
+  return String(process.env.TRUSTED_PROXY_CIDRS || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+const cloudflareProxies = toBlockList(CLOUDFLARE_PROXY_CIDRS);
+
+function createClientIp({ trustedProxyCidrs = configuredProxyCidrs() } = {}) {
+  const ownProxies = toBlockList(trustedProxyCidrs);
+
+  return function clientIp(req) {
+    const peer = normalizeIp(req.ip || '');
+
+    // Cloudflare перед нами: настоящий адрес — в cf-connecting-ip.
+    if (isInList(cloudflareProxies, peer)) {
+      const forwarded = headerIp(req, 'cf-connecting-ip');
+      if (forwarded) return ipKeyGenerator(forwarded);
+    }
+
+    // Свой reverse-proxy перед нами: адрес — в x-real-ip.
+    if (isInList(ownProxies, peer)) {
+      const forwarded = headerIp(req, 'x-real-ip');
+      if (forwarded) return ipKeyGenerator(forwarded);
+    }
+
+    // Во всех остальных случаях ключ — адрес соединения: его клиент подделать
+    // не может, поэтому лимит не обходится заголовками.
+    return peer ? ipKeyGenerator(peer) : 'unknown';
+  };
+}
+
+const clientIp = createClientIp();
 
 /* 1. Helmet */
 const helmetMiddleware = helmet({
@@ -212,6 +320,8 @@ module.exports = {
   bodyLimit,
   noSqlSanitizer,
   clientIp,
+  createClientIp,
+  CLOUDFLARE_PROXY_CIDRS,
   verifyToken,
   extractBearer
 };

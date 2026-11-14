@@ -150,7 +150,7 @@
      /api/users/me/pinned-achievement`; `400 ACHIEVEMENT_NOT_EARNED` для неполученного;
      потерянное достижение читается как `null` с `[WARN]`.
    - Миграция `scripts/add-pinned-achievement.js` — нужна до деплоя.
-   - **309 тестов, все зелёные** (см. §8).
+   - **334 теста, все зелёные** (см. §8).
 
 13. **6.0 — серверные фильтры каталога — реализованы в этой ветке.**
     - `GET /api/films` принимает `q` (экранированный regex по `title`, до 100),
@@ -188,6 +188,17 @@
     - Тесты: `tests/rating-privacy.test.js` — 5/5: рекурсивный обход JSON всех
       11 публичных ответов на ключи `ip`/`weight`/`vibeCreatedAt` и значение IP,
       сохранность контракта фронта (scores/blockWeights/nickname), `ip` в БД.
+
+16. **C-2 — подделка заголовков в лимитерах — реализована в этой ветке.**
+    - `clientIp()` больше не читает `cf-connecting-ip`/`x-real-ip` слепо: заголовок
+      принимается только если адрес соединения (`req.ip`) лежит в сетях этого прокси.
+    - Cloudflare — по встроенному `CLOUDFLARE_PROXY_CIDRS` (update при новых сетях),
+      свой nginx — по `TRUSTED_PROXY_CIDRS` (по умолчанию пусто, `x-real-ip` никому
+      не верим). Во всех прочих случаях ключ — `req.ip`.
+    - `createClientIp({ trustedProxyCidrs })` — фабрика для тестов/нестандартных прокси.
+    - `trust proxy` остаётся `1`: поднимать нельзя, иначе ключ станет клиентским XFF.
+    - Тесты: `tests/rate-limit-ip.test.js` — 15/15 (без Mongo), включая интеграцию с
+      настоящим `express-rate-limit`: ротация cf-заголовков с одного IP даёт 429.
 
 > Важно: миграция уже прошла. Не запускай её на проде «на всякий случай». Для проверки
 > достаточно `countDocuments` из §7.
@@ -256,7 +267,7 @@ tests/                 node:test
    со своим `imageLimiter` (1200/мин); отдаёт `Access-Control-Allow-Origin` (нужен
    canvas в шеринг-карточке) и **дополняет** `Vary`, а не перезаписывает его:
    `Vary: Origin` от `cors` терять нельзя, иначе ответ без ACAO уезжает в кэш
-   браузера на год (`immutable`) и ломает последующие CORS-загрузки (C-2).
+   браузера на год (`immutable`) и ломает последующие CORS-загрузки (фикс кэша постеров).
    Ошибки прокси — `Cache-Control: no-store`;
 5. `globalLimiter` (200/мин на IP);
 6. `express.json({ limit: '100kb' })`;
@@ -266,8 +277,13 @@ tests/                 node:test
 10. health (`/api/health`) и корень `/`;
 11. `notFoundHandler` → `errorHandler`.
 
-`app.set('trust proxy', 1)`; лимиты считают IP через `clientIp()`:
-`cf-connecting-ip` → `x-real-ip` → `req.ip`.
+`app.set('trust proxy', 1)` — ровно один хоп: `req.ip` это последняя запись
+`x-forwarded-for`, её дописывает edge Render; клиентские записи левее не учитываются.
+Поднимать число нельзя (C-2). Лимиты считают IP через `clientIp()`, и заголовки
+прокси принимаются только от проверенного адреса соединения:
+`cf-connecting-ip` — если `req.ip` в сетях Cloudflare (`CLOUDFLARE_PROXY_CIDRS`),
+`x-real-ip` — если `req.ip` в `TRUSTED_PROXY_CIDRS` (свой nginx, по умолчанию пусто).
+Во всех остальных случаях ключ — `req.ip`: подделать его заголовком нельзя.
 
 ### Формат ошибок
 
@@ -468,17 +484,19 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
 
 ## 8. Тесты
 
-- Всего **309**: 112 в старых файлах + 14 в `tests/vibe-rating.test.js` (B1)
+- Всего **334**: 112 в старых файлах + 17 в `tests/vibe-rating.test.js` (B1)
   + 14 в `tests/film-aggregates.test.js` (B2) + 15 в `tests/comment-gating.test.js` (B3)
   + 15 в `tests/review-gating.test.js` (B4) + 23 в `tests/watch-diary.test.js` (B5)
   + 25 в `tests/privacy.test.js` (B-PRIVACY) + 17 в `tests/watchlist.test.js` (B6)
   + 19 в `tests/film-likes.test.js` (B7) + 23 в `tests/comment-targets.test.js` (B8)
-  + 21 в `tests/profile-tabs.test.js` (B9) + 5 в `tests/rating-privacy.test.js` (C-1)
-  + 6 в `tests/poster-cors.test.js` (C-2).
-- Эти одиннадцать файлов используют `mongodb-memory-server` — внешняя Mongo не нужна:
+  + 22 в `tests/profile-tabs.test.js` (B9) + 6 в `tests/catalog-filters.test.js` (6.0)
+  + 5 в `tests/rating-privacy.test.js` (C-1) + 6 в `tests/poster-cors.test.js`
+  (CORS постеров) + 15 в `tests/rate-limit-ip.test.js` (C-2).
+- Внешняя Mongo не нужна ни одному файлу ниже: двенадцать поднимают
+  `mongodb-memory-server`, `poster-cors` и `rate-limit-ip` работают вообще без БД:
 
   ```bash
-  npm run test:vibe          # 14/14
+  npm run test:vibe          # 17/17
   npm run test:aggregates    # 14/14
   npm run test:gating        # 15/15
   npm run test:reviews       # 15/15
@@ -487,9 +505,10 @@ mongosh "$MONGODB_URI" --quiet --eval 'db.users.countDocuments({ "counters.vibes
   npm run test:watchlist     # 17/17
   npm run test:likes         # 19/19
   npm run test:targets       # 23/23
-  npm run test:tabs          # 21/21
+  npm run test:tabs          # 22/22
   npm run test:rating-privacy # 5/5
   npm run test:poster-cors   # 6/6, Mongo не нужен
+  npm run test:rate-limit-ip # 15/15, Mongo не нужен
   ```
 
 - Остальные 112 требуют MongoDB на `127.0.0.1:27017`:
@@ -812,6 +831,7 @@ achievementsCount } }`; массивы `ratings`, `reviews`, `comments`, `watche
 | `tests/profile-tabs.test.js` | 21 тест B9 (in-memory MongoDB) |
 | `tests/counters.test.js` | `vibes`/`watches`/`watchlist`/`filmLikes` в ожиданиях; мокает `Rating.exists` (B3) |
 | `tests/poster.test.js` | заглушка `Watch.countDocuments`: файл работает без Mongo |
+| `tests/rate-limit-ip.test.js` | 14 тестов C-2: `clientIp()` без Mongo + интеграция с `express-rate-limit` |
 | `README.md`, `CHANGELOG.md` | документация 5.9 |
 
 ---
@@ -819,12 +839,13 @@ achievementsCount } }`; массивы `ratings`, `reviews`, `comments`, `watche
 ## 13. Быстрый чек-лист перед изменениями
 
 1. `git status` — не в чужой ли ветке; ожидаем `feature/p1-vibe-ratings`.
-2. `npm run test:vibe` (14/14), `npm run test:aggregates` (14/14),
+2. `npm run test:vibe` (17/17), `npm run test:aggregates` (14/14),
    `npm run test:gating` (15/15), `npm run test:reviews` (15/15),
    `npm run test:watches` (23/23), `npm run test:privacy` (25/25),
    `npm run test:watchlist` (17/17), `npm run test:likes` (19/19),
-   `npm run test:targets` (23/23) и `npm run test:tabs` (21/21) — внешняя Mongo не нужна.
-3. Если есть Mongo — `npm test` — 309/309; если нет — см. §8.
+   `npm run test:targets` (23/23), `npm run test:tabs` (22/22),
+   `npm run test:rate-limit-ip` (15/15) — внешняя Mongo не нужна.
+3. Если есть Mongo — `npm test` — 334/334; если нет — см. §8.
 4. Прочитать `// DECISION` в `Rating.js`, `ratings.routes.js`, `filmAggregates.js`,
    `films.routes.js`, `ratingGate.js`, `comments.routes.js`, `Comment.js`,
    `reviews.routes.js`, `admin.routes.js`, `Watch.js`, `watches.routes.js`,

@@ -37,7 +37,14 @@ mongoose.set('strictQuery', false);
 const app = express();
 
 // ===== TRUST PROXY =====
-// Критично для корректной работы express-rate-limit за reverse-proxy (Render, Heroku, nginx и т.п.)
+// Критично для корректной работы express-rate-limit за reverse-proxy (Render).
+// Ровно один хоп: `req.ip` — последняя запись `x-forwarded-for`, её дописывает
+// edge Render. Всё, что клиент прислал в этом заголовке сам, лежит левее и
+// игнорируется. Поднимать число нельзя: при `trust proxy: 2` и запросе в обход
+// второго прокси `req.ip` станет значением, которое прислал клиент, и лимиты
+// снова будут обходиться подделкой заголовка (C-2). Заголовки прокси
+// (`cf-connecting-ip`, `x-real-ip`) принимаются только от проверенных сетей —
+// см. `clientIp()` в middleware/security.js.
 app.set('trust proxy', 1);
 
 // ===== CORS (до всего остального) =====

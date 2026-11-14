@@ -17,6 +17,7 @@
     "test:tabs": "node --test tests/profile-tabs.test.js",
     "test:rating-privacy": "node --test tests/rating-privacy.test.js",
     "test:poster-cors": "node --test tests/poster-cors.test.js",
+    "test:rate-limit-ip": "node --test tests/rate-limit-ip.test.js",
     "hooks:install": "git config core.hooksPath .githooks",
     "invite:new": "node scripts/new-invite.js"
   },
